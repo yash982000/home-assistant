@@ -36,7 +36,6 @@ from .const import ATTR_PASSIVE, ATTR_RADIUS, CONF_PASSIVE, DOMAIN, HOME_ZONE
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_NAME = "Unnamed zone"
 DEFAULT_PASSIVE = False
 DEFAULT_RADIUS = 100
 
