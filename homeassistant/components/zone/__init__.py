@@ -1,6 +1,6 @@
 """Support for the definition of zones."""
 import logging
-from typing import Dict, Optional, cast
+from typing import Dict, List, Optional, cast
 
 import voluptuous as vol
 
@@ -160,12 +160,32 @@ class ZoneStorageCollection(collection.StorageCollection):
         return {**data, **update_data}
 
 
+class IDLessCollection(collection.ObservableCollection):
+    """A collection without IDs."""
+
+    counter = 0
+
+    async def async_load(self, data: List[dict]) -> None:
+        """Load the collection. Overrides existing data."""
+        for item_id in list(self.data):
+            await self.notify_change(collection.CHANGE_REMOVED, item_id, None)
+
+        self.data.clear()
+
+        for item in data:
+            self.counter += 1
+            item_id = f"fakeid-{self.counter}"
+
+            self.data[item_id] = item
+            await self.notify_change(collection.CHANGE_ADDED, item_id, item)
+
+
 async def async_setup(hass: HomeAssistant, config: Dict) -> bool:
     """Set up configured zones as well as Home Assistant zone if necessary."""
     component = entity_component.EntityComponent(_LOGGER, DOMAIN, hass)
     id_manager = collection.IDManager()
 
-    yaml_collection = collection.YamlCollection(
+    yaml_collection = IDLessCollection(
         logging.getLogger(f"{__name__}.yaml_collection"), id_manager
     )
     collection.attach_entity_component_collection(
@@ -202,7 +222,6 @@ async def async_setup(hass: HomeAssistant, config: Dict) -> bool:
             cast(str, ent_reg.async_get_entity_id(DOMAIN, DOMAIN, item_id))
         )
 
-    yaml_collection.async_add_listener(_collection_changed)
     storage_collection.async_add_listener(_collection_changed)
 
     async def reload_service_handler(service_call: ServiceCall) -> None:
@@ -225,13 +244,15 @@ async def async_setup(hass: HomeAssistant, config: Dict) -> bool:
 
     home_zone = Zone(_home_conf(hass), True,)
     home_zone.entity_id = ENTITY_ID_HOME
-    component.async_add_entities([home_zone])  # type: ignore
+    await component.async_add_entities([home_zone])  # type: ignore
 
     async def core_config_updated(_: Event) -> None:
         """Handle core config updated."""
         await home_zone.async_update_config(_home_conf(hass))
 
     hass.bus.async_listen(EVENT_CORE_CONFIG_UPDATE, core_config_updated)
+
+    hass.data[DOMAIN] = storage_collection
 
     return True
 
@@ -244,8 +265,8 @@ def _home_conf(hass: HomeAssistant) -> Dict:
         CONF_LATITUDE: hass.config.latitude,
         CONF_LONGITUDE: hass.config.longitude,
         CONF_RADIUS: DEFAULT_RADIUS,
-        CONF_PASSIVE: ICON_HOME,
-        CONF_ICON: False,
+        CONF_ICON: ICON_HOME,
+        CONF_PASSIVE: False,
     }
 
 
@@ -253,10 +274,23 @@ async def async_setup_entry(
     hass: HomeAssistant, config_entry: config_entries.ConfigEntry
 ) -> bool:
     """Set up zone as config entry."""
+    storage_collection = cast(ZoneStorageCollection, hass.data[DOMAIN])
 
-    # TODO import into storage collection
-    # TODO remove entry
+    data = dict(config_entry.data)
+    data.setdefault(CONF_PASSIVE, DEFAULT_PASSIVE)
+    data.setdefault(CONF_RADIUS, DEFAULT_RADIUS)
 
+    await storage_collection.async_create_item(data)
+
+    hass.async_create_task(hass.config_entries.async_remove(config_entry.entry_id))
+
+    return True
+
+
+async def async_unload_entry(
+    hass: HomeAssistant, config_entry: config_entries.ConfigEntry
+) -> bool:
+    """Will be called once we remove it."""
     return True
 
 

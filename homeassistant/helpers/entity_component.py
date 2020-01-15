@@ -4,7 +4,7 @@ from datetime import timedelta
 from itertools import chain
 import logging
 from types import ModuleType
-from typing import Optional, cast
+from typing import Dict, Optional, cast
 
 from homeassistant import config as conf_util
 from homeassistant.config_entries import ConfigEntry
@@ -78,7 +78,9 @@ class EntityComponent:
 
         self.config = None
 
-        self._platforms = {domain: self._async_init_entity_platform(domain, None)}
+        self._platforms: Dict[str, EntityPlatform] = {
+            domain: self._async_init_entity_platform(domain, None)
+        }
         self.async_add_entities = self._platforms[domain].async_add_entities
         self.add_entities = self._platforms[domain].add_entities
 
