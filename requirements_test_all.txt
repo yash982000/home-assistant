@@ -597,7 +597,7 @@ solaredge==0.0.2
 somecomfort==0.5.2
 
 # homeassistant.components.spotify
-spotipy==2.5.0
+spotipy==2.6.3
 
 # homeassistant.components.recorder
 # homeassistant.components.sql
