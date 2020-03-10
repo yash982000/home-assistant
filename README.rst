@@ -14,7 +14,7 @@ Featured integrations
 
 |screenshot-components|
 
-The system is built using a modular approach so support for other devices or actions can be implemented easily. See also the `section on architecture <https://developers.home-assistant.io/docs/en/architecture_index.html>`__ and the `section on creating your own
+The system is built using a modular approach, so support for other devices or actions can be implemented easily. See also the `section on architecture <https://developers.home-assistant.io/docs/en/architecture_index.html>`__ and the `section on creating your own
 components <https://developers.home-assistant.io/docs/en/creating_component_index.html>`__.
 
 If you run into issues while using Home Assistant or during development
