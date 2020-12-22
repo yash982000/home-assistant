@@ -4,7 +4,7 @@ from typing import Optional
 
 import voluptuous as vol
 
-from homeassistant.components.climate import ClimateDevice
+from homeassistant.components.climate import ClimateEntity
 from homeassistant.components.climate.const import (
     ATTR_TARGET_TEMP_HIGH,
     ATTR_TARGET_TEMP_LOW,
@@ -15,15 +15,16 @@ from homeassistant.components.climate.const import (
     CURRENT_HVAC_IDLE,
     FAN_AUTO,
     FAN_ON,
-    HVAC_MODE_AUTO,
     HVAC_MODE_COOL,
     HVAC_MODE_HEAT,
+    HVAC_MODE_HEAT_COOL,
     HVAC_MODE_OFF,
     PRESET_AWAY,
     PRESET_NONE,
     SUPPORT_AUX_HEAT,
     SUPPORT_FAN_MODE,
     SUPPORT_PRESET_MODE,
+    SUPPORT_TARGET_HUMIDITY,
     SUPPORT_TARGET_TEMPERATURE,
     SUPPORT_TARGET_TEMPERATURE_RANGE,
 )
@@ -33,6 +34,7 @@ from homeassistant.const import (
     STATE_ON,
     TEMP_FAHRENHEIT,
 )
+from homeassistant.helpers import entity_platform
 import homeassistant.helpers.config_validation as cv
 from homeassistant.util.temperature import convert
 
@@ -49,6 +51,10 @@ ATTR_RESUME_ALL = "resume_all"
 ATTR_START_DATE = "start_date"
 ATTR_START_TIME = "start_time"
 ATTR_VACATION_NAME = "vacation_name"
+ATTR_DST_ENABLED = "dst_enabled"
+ATTR_MIC_ENABLED = "mic_enabled"
+ATTR_AUTO_AWAY = "auto_away"
+ATTR_FOLLOW_ME = "follow_me"
 
 DEFAULT_RESUME_ALL = False
 PRESET_TEMPERATURE = "temp"
@@ -59,12 +65,17 @@ AWAY_MODE = "awayMode"
 PRESET_HOME = "home"
 PRESET_SLEEP = "sleep"
 
+DEFAULT_MIN_HUMIDITY = 15
+DEFAULT_MAX_HUMIDITY = 50
+HUMIDIFIER_MANUAL_MODE = "manual"
+
+
 # Order matters, because for reverse mapping we don't want to map HEAT to AUX
 ECOBEE_HVAC_TO_HASS = collections.OrderedDict(
     [
         ("heat", HVAC_MODE_HEAT),
         ("cool", HVAC_MODE_COOL),
-        ("auto", HVAC_MODE_AUTO),
+        ("auto", HVAC_MODE_HEAT_COOL),
         ("off", HVAC_MODE_OFF),
         ("auxHeatOnly", HVAC_MODE_HEAT),
     ]
@@ -98,6 +109,9 @@ SERVICE_CREATE_VACATION = "create_vacation"
 SERVICE_DELETE_VACATION = "delete_vacation"
 SERVICE_RESUME_PROGRAM = "resume_program"
 SERVICE_SET_FAN_MIN_ON_TIME = "set_fan_min_on_time"
+SERVICE_SET_DST_MODE = "set_dst_mode"
+SERVICE_SET_MIC_MODE = "set_mic_mode"
+SERVICE_SET_OCCUPANCY_MODES = "set_occupancy_modes"
 
 DTGROUP_INCLUSIVE_MSG = (
     f"{ATTR_START_DATE}, {ATTR_START_TIME}, {ATTR_END_DATE}, "
@@ -156,11 +170,6 @@ SUPPORT_FLAGS = (
 )
 
 
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    """Old way of setting up ecobee thermostat."""
-    pass
-
-
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up the ecobee thermostat."""
 
@@ -169,6 +178,8 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     devices = [Thermostat(data, index) for index in range(len(data.ecobee.thermostats))]
 
     async_add_entities(devices, True)
+
+    platform = entity_platform.current_platform.get()
 
     def create_vacation_service(service):
         """Create a vacation on the target thermostat."""
@@ -253,8 +264,29 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         schema=RESUME_PROGRAM_SCHEMA,
     )
 
+    platform.async_register_entity_service(
+        SERVICE_SET_DST_MODE,
+        {vol.Required(ATTR_DST_ENABLED): cv.boolean},
+        "set_dst_mode",
+    )
 
-class Thermostat(ClimateDevice):
+    platform.async_register_entity_service(
+        SERVICE_SET_MIC_MODE,
+        {vol.Required(ATTR_MIC_ENABLED): cv.boolean},
+        "set_mic_mode",
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_SET_OCCUPANCY_MODES,
+        {
+            vol.Optional(ATTR_AUTO_AWAY): cv.boolean,
+            vol.Optional(ATTR_FOLLOW_ME): cv.boolean,
+        },
+        "set_occupancy_modes",
+    )
+
+
+class Thermostat(ClimateEntity):
     """A thermostat class for Ecobee."""
 
     def __init__(self, data, thermostat_index):
@@ -264,7 +296,7 @@ class Thermostat(ClimateDevice):
         self.thermostat = self.data.ecobee.get_thermostat(self.thermostat_index)
         self._name = self.thermostat["name"]
         self.vacation = None
-        self._last_active_hvac_mode = HVAC_MODE_AUTO
+        self._last_active_hvac_mode = HVAC_MODE_HEAT_COOL
 
         self._operation_list = []
         if (
@@ -275,7 +307,7 @@ class Thermostat(ClimateDevice):
         if self.thermostat["settings"]["coolStages"]:
             self._operation_list.append(HVAC_MODE_COOL)
         if len(self._operation_list) == 2:
-            self._operation_list.insert(0, HVAC_MODE_AUTO)
+            self._operation_list.insert(0, HVAC_MODE_HEAT_COOL)
         self._operation_list.append(HVAC_MODE_OFF)
 
         self._preset_modes = {
@@ -293,7 +325,7 @@ class Thermostat(ClimateDevice):
         else:
             await self.data.update()
         self.thermostat = self.data.ecobee.get_thermostat(self.thermostat_index)
-        if self.hvac_mode is not HVAC_MODE_OFF:
+        if self.hvac_mode != HVAC_MODE_OFF:
             self._last_active_hvac_mode = self.hvac_mode
 
     @property
@@ -304,6 +336,8 @@ class Thermostat(ClimateDevice):
     @property
     def supported_features(self):
         """Return the list of supported features."""
+        if self.has_humidifier_control:
+            return SUPPORT_FLAGS | SUPPORT_TARGET_HUMIDITY
         return SUPPORT_FLAGS
 
     @property
@@ -325,7 +359,7 @@ class Thermostat(ClimateDevice):
             _LOGGER.error(
                 "Model number for ecobee thermostat %s not recognized. "
                 "Please visit this link and provide the following information: "
-                "https://github.com/home-assistant/home-assistant/issues/27172 "
+                "https://github.com/home-assistant/core/issues/27172 "
                 "Unrecognized model number: %s",
                 self.name,
                 self.thermostat["modelNumber"],
@@ -352,21 +386,46 @@ class Thermostat(ClimateDevice):
     @property
     def target_temperature_low(self):
         """Return the lower bound temperature we try to reach."""
-        if self.hvac_mode == HVAC_MODE_AUTO:
+        if self.hvac_mode == HVAC_MODE_HEAT_COOL:
             return self.thermostat["runtime"]["desiredHeat"] / 10.0
         return None
 
     @property
     def target_temperature_high(self):
         """Return the upper bound temperature we try to reach."""
-        if self.hvac_mode == HVAC_MODE_AUTO:
+        if self.hvac_mode == HVAC_MODE_HEAT_COOL:
             return self.thermostat["runtime"]["desiredCool"] / 10.0
         return None
 
     @property
+    def has_humidifier_control(self):
+        """Return true if humidifier connected to thermostat and set to manual/on mode."""
+        return (
+            self.thermostat["settings"]["hasHumidifier"]
+            and self.thermostat["settings"]["humidifierMode"] == HUMIDIFIER_MANUAL_MODE
+        )
+
+    @property
+    def target_humidity(self) -> Optional[int]:
+        """Return the desired humidity set point."""
+        if self.has_humidifier_control:
+            return self.thermostat["runtime"]["desiredHumidity"]
+        return None
+
+    @property
+    def min_humidity(self) -> int:
+        """Return the minimum humidity."""
+        return DEFAULT_MIN_HUMIDITY
+
+    @property
+    def max_humidity(self) -> int:
+        """Return the maximum humidity."""
+        return DEFAULT_MAX_HUMIDITY
+
+    @property
     def target_temperature(self):
         """Return the temperature we try to reach."""
-        if self.hvac_mode == HVAC_MODE_AUTO:
+        if self.hvac_mode == HVAC_MODE_HEAT_COOL:
             return None
         if self.hvac_mode == HVAC_MODE_HEAT:
             return self.thermostat["runtime"]["desiredHeat"] / 10.0
@@ -477,6 +536,16 @@ class Thermostat(ClimateDevice):
         """Return true if aux heater."""
         return "auxHeat" in self.thermostat["equipmentStatus"]
 
+    async def async_turn_aux_heat_on(self) -> None:
+        """Turn auxiliary heater on."""
+        if not self.is_aux_heat:
+            _LOGGER.warning("# Changing aux heat is not supported")
+
+    async def async_turn_aux_heat_off(self) -> None:
+        """Turn auxiliary heater off."""
+        if self.is_aux_heat:
+            _LOGGER.warning("# Changing aux heat is not supported")
+
     def set_preset_mode(self, preset_mode):
         """Activate a preset."""
         if preset_mode == self.preset_mode:
@@ -561,7 +630,7 @@ class Thermostat(ClimateDevice):
 
     def set_fan_mode(self, fan_mode):
         """Set the fan mode.  Valid values are "on" or "auto"."""
-        if fan_mode.lower() != STATE_ON and fan_mode.lower() != HVAC_MODE_AUTO:
+        if fan_mode.lower() not in (FAN_ON, FAN_AUTO):
             error = "Invalid fan_mode value:  Valid values are 'on' or 'auto'"
             _LOGGER.error(error)
             return
@@ -604,7 +673,7 @@ class Thermostat(ClimateDevice):
         high_temp = kwargs.get(ATTR_TARGET_TEMP_HIGH)
         temp = kwargs.get(ATTR_TEMPERATURE)
 
-        if self.hvac_mode == HVAC_MODE_AUTO and (
+        if self.hvac_mode == HVAC_MODE_HEAT_COOL and (
             low_temp is not None or high_temp is not None
         ):
             self.set_auto_temp_hold(low_temp, high_temp)
@@ -615,7 +684,13 @@ class Thermostat(ClimateDevice):
 
     def set_humidity(self, humidity):
         """Set the humidity level."""
-        self.data.ecobee.set_humidity(self.thermostat_index, humidity)
+        if humidity not in range(0, 101):
+            raise ValueError(
+                f"Invalid set_humidity value (must be in range 0-100): {humidity}"
+            )
+
+        self.data.ecobee.set_humidity(self.thermostat_index, int(humidity))
+        self.update_without_throttle = True
 
     def set_hvac_mode(self, hvac_mode):
         """Set HVAC mode (auto, auxHeatOnly, cool, heat, off)."""
@@ -715,3 +790,17 @@ class Thermostat(ClimateDevice):
             self._last_active_hvac_mode,
         )
         self.set_hvac_mode(self._last_active_hvac_mode)
+
+    def set_dst_mode(self, dst_enabled):
+        """Enable/disable automatic daylight savings time."""
+        self.data.ecobee.set_dst_mode(self.thermostat_index, dst_enabled)
+
+    def set_mic_mode(self, mic_enabled):
+        """Enable/disable Alexa mic (only for Ecobee 4)."""
+        self.data.ecobee.set_mic_mode(self.thermostat_index, mic_enabled)
+
+    def set_occupancy_modes(self, auto_away=None, follow_me=None):
+        """Enable/disable Smart Home/Away and Follow Me modes."""
+        self.data.ecobee.set_occupancy_modes(
+            self.thermostat_index, auto_away, follow_me
+        )

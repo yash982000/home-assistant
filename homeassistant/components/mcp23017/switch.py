@@ -1,7 +1,5 @@
 """Support for switch sensor using I2C MCP23017 chip."""
-import logging
-
-import adafruit_mcp230xx  # pylint: disable=import-error
+from adafruit_mcp230xx.mcp23017 import MCP23017  # pylint: disable=import-error
 import board  # pylint: disable=import-error
 import busio  # pylint: disable=import-error
 import digitalio  # pylint: disable=import-error
@@ -11,8 +9,6 @@ from homeassistant.components.switch import PLATFORM_SCHEMA
 from homeassistant.const import DEVICE_DEFAULT_NAME
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity import ToggleEntity
-
-_LOGGER = logging.getLogger(__name__)
 
 CONF_INVERT_LOGIC = "invert_logic"
 CONF_I2C_ADDRESS = "i2c_address"
@@ -39,7 +35,7 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
     i2c_address = config.get(CONF_I2C_ADDRESS)
 
     i2c = busio.I2C(board.SCL, board.SDA)
-    mcp = adafruit_mcp230xx.MCP23017(i2c, address=i2c_address)
+    mcp = MCP23017(i2c, address=i2c_address)
 
     switches = []
     pins = config.get(CONF_PINS)

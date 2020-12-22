@@ -1,6 +1,4 @@
 """Volume conversion util functions."""
-
-import logging
 from numbers import Number
 
 from homeassistant.const import (
@@ -11,8 +9,6 @@ from homeassistant.const import (
     VOLUME_LITERS,
     VOLUME_MILLILITERS,
 )
-
-_LOGGER = logging.getLogger(__name__)
 
 VALID_UNITS = [VOLUME_LITERS, VOLUME_MILLILITERS, VOLUME_GALLONS, VOLUME_FLUID_OUNCE]
 
@@ -37,11 +33,10 @@ def convert(volume: float, from_unit: str, to_unit: str) -> float:
     if not isinstance(volume, Number):
         raise TypeError(f"{volume} is not of numeric type")
 
-    # type ignore: https://github.com/python/mypy/issues/7207
-    if from_unit == to_unit:  # type: ignore
+    if from_unit == to_unit:
         return volume
 
-    result = volume
+    result: float = volume
     if from_unit == VOLUME_LITERS and to_unit == VOLUME_GALLONS:
         result = __liter_to_gallon(volume)
     elif from_unit == VOLUME_GALLONS and to_unit == VOLUME_LITERS:

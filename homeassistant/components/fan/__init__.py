@@ -6,7 +6,12 @@ from typing import Optional
 
 import voluptuous as vol
 
-from homeassistant.const import SERVICE_TOGGLE, SERVICE_TURN_OFF, SERVICE_TURN_ON
+from homeassistant.const import (
+    SERVICE_TOGGLE,
+    SERVICE_TURN_OFF,
+    SERVICE_TURN_ON,
+    STATE_ON,
+)
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.config_validation import (  # noqa: F401
     PLATFORM_SCHEMA,
@@ -45,18 +50,14 @@ ATTR_SPEED_LIST = "speed_list"
 ATTR_OSCILLATING = "oscillating"
 ATTR_DIRECTION = "direction"
 
-PROP_TO_ATTR = {
-    "speed": ATTR_SPEED,
-    "oscillating": ATTR_OSCILLATING,
-    "current_direction": ATTR_DIRECTION,
-}
-
 
 @bind_hass
 def is_on(hass, entity_id: str) -> bool:
     """Return if the fans are on based on the statemachine."""
     state = hass.states.get(entity_id)
-    return state.attributes[ATTR_SPEED] not in [SPEED_OFF, None]
+    if ATTR_SPEED in state.attributes:
+        return state.attributes[ATTR_SPEED] not in [SPEED_OFF, None]
+    return state.state == STATE_ON
 
 
 async def async_setup(hass, config: dict):
@@ -111,25 +112,20 @@ class FanEntity(ToggleEntity):
         """Set the speed of the fan."""
         raise NotImplementedError()
 
-    def async_set_speed(self, speed: str):
-        """Set the speed of the fan.
-
-        This method must be run in the event loop and returns a coroutine.
-        """
-        if speed is SPEED_OFF:
-            return self.async_turn_off()
-        return self.hass.async_add_job(self.set_speed, speed)
+    async def async_set_speed(self, speed: str):
+        """Set the speed of the fan."""
+        if speed == SPEED_OFF:
+            await self.async_turn_off()
+        else:
+            await self.hass.async_add_executor_job(self.set_speed, speed)
 
     def set_direction(self, direction: str) -> None:
         """Set the direction of the fan."""
         raise NotImplementedError()
 
-    def async_set_direction(self, direction: str):
-        """Set the direction of the fan.
-
-        This method must be run in the event loop and returns a coroutine.
-        """
-        return self.hass.async_add_job(self.set_direction, direction)
+    async def async_set_direction(self, direction: str):
+        """Set the direction of the fan."""
+        await self.hass.async_add_executor_job(self.set_direction, direction)
 
     # pylint: disable=arguments-differ
     def turn_on(self, speed: Optional[str] = None, **kwargs) -> None:
@@ -137,25 +133,22 @@ class FanEntity(ToggleEntity):
         raise NotImplementedError()
 
     # pylint: disable=arguments-differ
-    def async_turn_on(self, speed: Optional[str] = None, **kwargs):
-        """Turn on the fan.
-
-        This method must be run in the event loop and returns a coroutine.
-        """
-        if speed is SPEED_OFF:
-            return self.async_turn_off()
-        return self.hass.async_add_job(ft.partial(self.turn_on, speed, **kwargs))
+    async def async_turn_on(self, speed: Optional[str] = None, **kwargs):
+        """Turn on the fan."""
+        if speed == SPEED_OFF:
+            await self.async_turn_off()
+        else:
+            await self.hass.async_add_executor_job(
+                ft.partial(self.turn_on, speed, **kwargs)
+            )
 
     def oscillate(self, oscillating: bool) -> None:
         """Oscillate the fan."""
-        pass
+        raise NotImplementedError()
 
-    def async_oscillate(self, oscillating: bool):
-        """Oscillate the fan.
-
-        This method must be run in the event loop and returns a coroutine.
-        """
-        return self.hass.async_add_job(self.oscillate, oscillating)
+    async def async_oscillate(self, oscillating: bool):
+        """Oscillate the fan."""
+        await self.hass.async_add_executor_job(self.oscillate, oscillating)
 
     @property
     def is_on(self):
@@ -178,22 +171,31 @@ class FanEntity(ToggleEntity):
         return None
 
     @property
+    def oscillating(self):
+        """Return whether or not the fan is currently oscillating."""
+        return None
+
+    @property
     def capability_attributes(self):
-        """Return capabilitiy attributes."""
-        return {ATTR_SPEED_LIST: self.speed_list}
+        """Return capability attributes."""
+        if self.supported_features & SUPPORT_SET_SPEED:
+            return {ATTR_SPEED_LIST: self.speed_list}
+        return {}
 
     @property
     def state_attributes(self) -> dict:
         """Return optional state attributes."""
         data = {}
+        supported_features = self.supported_features
 
-        for prop, attr in PROP_TO_ATTR.items():
-            if not hasattr(self, prop):
-                continue
+        if supported_features & SUPPORT_DIRECTION:
+            data[ATTR_DIRECTION] = self.current_direction
 
-            value = getattr(self, prop)
-            if value is not None:
-                data[attr] = value
+        if supported_features & SUPPORT_OSCILLATE:
+            data[ATTR_OSCILLATING] = self.oscillating
+
+        if supported_features & SUPPORT_SET_SPEED:
+            data[ATTR_SPEED] = self.speed
 
         return data
 

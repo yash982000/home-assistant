@@ -15,6 +15,7 @@ DATA_DELETED_IDS = "deleted_ids"
 DATA_DEVICES = "devices"
 DATA_SENSOR = "sensor"
 DATA_STORE = "store"
+DATA_NOTIFY = "notify"
 
 ATTR_APP_DATA = "app_data"
 ATTR_APP_ID = "app_id"
@@ -52,9 +53,11 @@ ATTR_WEBHOOK_ENCRYPTED = "encrypted"
 ATTR_WEBHOOK_ENCRYPTED_DATA = "encrypted_data"
 ATTR_WEBHOOK_TYPE = "type"
 
+ERR_ENCRYPTION_ALREADY_ENABLED = "encryption_already_enabled"
+ERR_ENCRYPTION_NOT_AVAILABLE = "encryption_not_available"
 ERR_ENCRYPTION_REQUIRED = "encryption_required"
 ERR_SENSOR_NOT_REGISTERED = "not_registered"
-ERR_SENSOR_DUPLICATE_UNIQUE_ID = "duplicate_unique_id"
+ERR_INVALID_FORMAT = "invalid_format"
 
 
 ATTR_SENSOR_ATTRIBUTES = "attributes"
@@ -68,5 +71,7 @@ ATTR_SENSOR_TYPE_SENSOR = "sensor"
 ATTR_SENSOR_UNIQUE_ID = "unique_id"
 ATTR_SENSOR_UOM = "unit_of_measurement"
 
-SIGNAL_SENSOR_UPDATE = DOMAIN + "_sensor_update"
+SIGNAL_SENSOR_UPDATE = f"{DOMAIN}_sensor_update"
 SIGNAL_LOCATION_UPDATE = DOMAIN + "_location_update_{}"
+
+ATTR_CAMERA_ENTITY_ID = "camera_entity_id"

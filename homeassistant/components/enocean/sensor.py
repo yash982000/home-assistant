@@ -1,9 +1,6 @@
 """Support for EnOcean sensors."""
-import logging
-
 import voluptuous as vol
 
-from homeassistant.components import enocean
 from homeassistant.components.sensor import PLATFORM_SCHEMA
 from homeassistant.const import (
     CONF_DEVICE_CLASS,
@@ -12,14 +9,16 @@ from homeassistant.const import (
     DEVICE_CLASS_HUMIDITY,
     DEVICE_CLASS_POWER,
     DEVICE_CLASS_TEMPERATURE,
+    PERCENTAGE,
     POWER_WATT,
     STATE_CLOSED,
     STATE_OPEN,
     TEMP_CELSIUS,
 )
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.restore_state import RestoreEntity
 
-_LOGGER = logging.getLogger(__name__)
+from .device import EnOceanEntity
 
 CONF_MAX_TEMP = "max_temp"
 CONF_MIN_TEMP = "min_temp"
@@ -36,7 +35,7 @@ SENSOR_TYPE_WINDOWHANDLE = "windowhandle"
 SENSOR_TYPES = {
     SENSOR_TYPE_HUMIDITY: {
         "name": "Humidity",
-        "unit": "%",
+        "unit": PERCENTAGE,
         "icon": "mdi:water-percent",
         "class": DEVICE_CLASS_HUMIDITY,
     },
@@ -59,7 +58,6 @@ SENSOR_TYPES = {
         "class": None,
     },
 }
-
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
@@ -103,7 +101,7 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
         add_entities([EnOceanWindowHandle(dev_id, dev_name)])
 
 
-class EnOceanSensor(enocean.EnOceanDevice):
+class EnOceanSensor(EnOceanEntity, RestoreEntity):
     """Representation of an  EnOcean sensor device such as a power meter."""
 
     def __init__(self, dev_id, dev_name, sensor_type):
@@ -111,9 +109,7 @@ class EnOceanSensor(enocean.EnOceanDevice):
         super().__init__(dev_id, dev_name)
         self._sensor_type = sensor_type
         self._device_class = SENSOR_TYPES[self._sensor_type]["class"]
-        self._dev_name = "{} {}".format(
-            SENSOR_TYPES[self._sensor_type]["name"], dev_name
-        )
+        self._dev_name = f"{SENSOR_TYPES[self._sensor_type]['name']} {dev_name}"
         self._unit_of_measurement = SENSOR_TYPES[self._sensor_type]["unit"]
         self._icon = SENSOR_TYPES[self._sensor_type]["icon"]
         self._state = None
@@ -142,6 +138,17 @@ class EnOceanSensor(enocean.EnOceanDevice):
     def unit_of_measurement(self):
         """Return the unit of measurement."""
         return self._unit_of_measurement
+
+    async def async_added_to_hass(self):
+        """Call when entity about to be added to hass."""
+        # If not None, we got an initial value.
+        await super().async_added_to_hass()
+        if self._state is not None:
+            return
+
+        state = await self.async_get_last_state()
+        if state is not None:
+            self._state = state.state
 
     def value_changed(self, packet):
         """Update the internal state of the sensor."""

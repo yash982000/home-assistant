@@ -44,7 +44,7 @@ from homeassistant.helpers import (
     service,
 )
 from homeassistant.helpers.entity_component import EntityComponent
-from homeassistant.helpers.event import async_track_state_change
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType, HomeAssistantType
@@ -57,6 +57,7 @@ ATTR_USER_ID = "user_id"
 
 CONF_DEVICE_TRACKERS = "device_trackers"
 CONF_USER_ID = "user_id"
+CONF_PICTURE = "picture"
 
 DOMAIN = "person"
 
@@ -73,22 +74,29 @@ PERSON_SCHEMA = vol.Schema(
         vol.Optional(CONF_DEVICE_TRACKERS, default=[]): vol.All(
             cv.ensure_list, cv.entities_domain(DEVICE_TRACKER_DOMAIN)
         ),
+        vol.Optional(CONF_PICTURE): cv.string,
     }
 )
 
 CONFIG_SCHEMA = vol.Schema(
-    {vol.Optional(DOMAIN): vol.All(cv.ensure_list, cv.remove_falsy, [PERSON_SCHEMA])},
+    {
+        vol.Optional(DOMAIN, default=[]): vol.All(
+            cv.ensure_list, cv.remove_falsy, [PERSON_SCHEMA]
+        )
+    },
     extra=vol.ALLOW_EXTRA,
 )
-
-_UNDEF = object()
 
 
 @bind_hass
 async def async_create_person(hass, name, *, user_id=None, device_trackers=None):
     """Create a new person."""
     await hass.data[DOMAIN][1].async_create_item(
-        {ATTR_NAME: name, ATTR_USER_ID: user_id, "device_trackers": device_trackers}
+        {
+            ATTR_NAME: name,
+            ATTR_USER_ID: user_id,
+            CONF_DEVICE_TRACKERS: device_trackers or [],
+        }
     )
 
 
@@ -103,14 +111,14 @@ async def async_add_user_device_tracker(
         if person.get(ATTR_USER_ID) != user_id:
             continue
 
-        device_trackers = person["device_trackers"]
+        device_trackers = person[CONF_DEVICE_TRACKERS]
 
         if device_tracker_entity_id in device_trackers:
             return
 
         await coll.async_update_item(
             person[collection.CONF_ID],
-            {"device_trackers": device_trackers + [device_tracker_entity_id]},
+            {CONF_DEVICE_TRACKERS: device_trackers + [device_tracker_entity_id]},
         )
         break
 
@@ -121,6 +129,7 @@ CREATE_FIELDS = {
     vol.Optional(CONF_DEVICE_TRACKERS, default=list): vol.All(
         cv.ensure_list, cv.entities_domain(DEVICE_TRACKER_DOMAIN)
     ),
+    vol.Optional(CONF_PICTURE): vol.Any(str, None),
 }
 
 
@@ -130,6 +139,7 @@ UPDATE_FIELDS = {
     vol.Optional(CONF_DEVICE_TRACKERS, default=list): vol.All(
         cv.ensure_list, cv.entities_domain(DEVICE_TRACKER_DOMAIN)
     ),
+    vol.Optional(CONF_PICTURE): vol.Any(str, None),
 }
 
 
@@ -161,6 +171,23 @@ class PersonStorageCollection(collection.StorageCollection):
         super().__init__(store, logger, id_manager)
         self.yaml_collection = yaml_collection
 
+    async def _async_load_data(self) -> Optional[dict]:
+        """Load the data.
+
+        A past bug caused onboarding to create invalid person objects.
+        This patches it up.
+        """
+        data = await super()._async_load_data()
+
+        if data is None:
+            return data
+
+        for person in data["items"]:
+            if person[CONF_DEVICE_TRACKERS] is None:
+                person[CONF_DEVICE_TRACKERS] = []
+
+        return data
+
     async def async_load(self) -> None:
         """Load the Storage collection."""
         await super().async_load()
@@ -179,14 +206,16 @@ class PersonStorageCollection(collection.StorageCollection):
             return
 
         for person in list(self.data.values()):
-            if entity_id not in person["device_trackers"]:
+            if entity_id not in person[CONF_DEVICE_TRACKERS]:
                 continue
 
             await self.async_update_item(
                 person[collection.CONF_ID],
                 {
-                    "device_trackers": [
-                        devt for devt in person["device_trackers"] if devt != entity_id
+                    CONF_DEVICE_TRACKERS: [
+                        devt
+                        for devt in person[CONF_DEVICE_TRACKERS]
+                        if devt != entity_id
                     ]
                 },
             )
@@ -315,7 +344,9 @@ async def async_setup(hass: HomeAssistantType, config: ConfigType):
         conf = await entity_component.async_prepare_reload(skip_reset=True)
         if conf is None:
             return
-        await yaml_collection.async_load(await filter_yaml_data(hass, conf[DOMAIN]))
+        await yaml_collection.async_load(
+            await filter_yaml_data(hass, conf.get(DOMAIN, []))
+        )
 
     service.async_register_admin_service(
         hass, DOMAIN, SERVICE_RELOAD, async_reload_yaml
@@ -342,6 +373,11 @@ class Person(RestoreEntity):
     def name(self):
         """Return the name of the entity."""
         return self._config[CONF_NAME]
+
+    @property
+    def entity_picture(self) -> Optional[str]:
+        """Return entity picture."""
+        return self._config.get(CONF_PICTURE)
 
     @property
     def should_poll(self):
@@ -406,19 +442,19 @@ class Person(RestoreEntity):
             self._unsub_track_device()
             self._unsub_track_device = None
 
-        trackers = self._config.get(CONF_DEVICE_TRACKERS)
+        trackers = self._config[CONF_DEVICE_TRACKERS]
 
         if trackers:
             _LOGGER.debug("Subscribe to device trackers for %s", self.entity_id)
 
-            self._unsub_track_device = async_track_state_change(
+            self._unsub_track_device = async_track_state_change_event(
                 self.hass, trackers, self._async_handle_tracker_update
             )
 
         self._update_state()
 
     @callback
-    def _async_handle_tracker_update(self, entity, old_state, new_state):
+    def _async_handle_tracker_update(self, event):
         """Handle the device tracker state changes."""
         self._update_state()
 
@@ -426,7 +462,7 @@ class Person(RestoreEntity):
     def _update_state(self):
         """Update the state."""
         latest_non_gps_home = latest_not_home = latest_gps = latest = None
-        for entity_id in self._config.get(CONF_DEVICE_TRACKERS, []):
+        for entity_id in self._config[CONF_DEVICE_TRACKERS]:
             state = self.hass.states.get(entity_id)
 
             if not state or state.state in IGNORE_STATES:
@@ -455,7 +491,7 @@ class Person(RestoreEntity):
             self._longitude = None
             self._gps_accuracy = None
 
-        self.async_schedule_update_ha_state()
+        self.async_write_ha_state()
 
     @callback
     def _parse_source_state(self, state):

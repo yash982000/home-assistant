@@ -1,7 +1,9 @@
 """Helper to deal with YAML + storage."""
 from abc import ABC, abstractmethod
+import asyncio
+from dataclasses import dataclass
 import logging
-from typing import Any, Awaitable, Callable, Dict, List, Optional, cast
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, cast
 
 import voluptuous as vol
 from voluptuous.humanize import humanize_error
@@ -25,17 +27,31 @@ CHANGE_UPDATED = "updated"
 CHANGE_REMOVED = "removed"
 
 
+@dataclass
+class CollectionChangeSet:
+    """Class to represent a change set.
+
+    change_type: One of CHANGE_*
+    item_id: The id of the item
+    item: The item
+    """
+
+    change_type: str
+    item_id: str
+    item: Any
+
+
 ChangeListener = Callable[
     [
         # Change type
         str,
         # Item ID
         str,
-        # New config (None if removed)
-        Optional[dict],
+        # New or removed config
+        dict,
     ],
     Awaitable[None],
-]  # pylint: disable=invalid-name
+]
 
 
 class CollectionError(HomeAssistantError):
@@ -104,21 +120,26 @@ class ObservableCollection(ABC):
         """
         self.listeners.append(listener)
 
-    async def notify_change(
-        self, change_type: str, item_id: str, item: Optional[dict]
-    ) -> None:
+    async def notify_changes(self, change_sets: Iterable[CollectionChangeSet]) -> None:
         """Notify listeners of a change."""
-        self.logger.debug("%s %s: %s", change_type, item_id, item)
-        for listener in self.listeners:
-            await listener(change_type, item_id, item)
+        await asyncio.gather(
+            *[
+                listener(change_set.change_type, change_set.item_id, change_set.item)
+                for listener in self.listeners
+                for change_set in change_sets
+            ]
+        )
 
 
 class YamlCollection(ObservableCollection):
-    """Offer a fake CRUD interface on top of static YAML."""
+    """Offer a collection based on static data."""
 
     async def async_load(self, data: List[dict]) -> None:
         """Load the YAML collection. Overrides existing data."""
+
         old_ids = set(self.data)
+
+        change_sets = []
 
         for item in data:
             item_id = item[CONF_ID]
@@ -133,11 +154,15 @@ class YamlCollection(ObservableCollection):
                 event = CHANGE_ADDED
 
             self.data[item_id] = item
-            await self.notify_change(event, item[CONF_ID], item)
+            change_sets.append(CollectionChangeSet(event, item_id, item))
 
         for item_id in old_ids:
-            self.data.pop(item_id)
-            await self.notify_change(CHANGE_REMOVED, item_id, None)
+            change_sets.append(
+                CollectionChangeSet(CHANGE_REMOVED, item_id, self.data.pop(item_id))
+            )
+
+        if change_sets:
+            await self.notify_changes(change_sets)
 
 
 class StorageCollection(ObservableCollection):
@@ -158,16 +183,26 @@ class StorageCollection(ObservableCollection):
         """Home Assistant object."""
         return self.store.hass
 
+    async def _async_load_data(self) -> Optional[dict]:
+        """Load the data."""
+        return cast(Optional[dict], await self.store.async_load())
+
     async def async_load(self) -> None:
         """Load the storage Manager."""
-        raw_storage = cast(Optional[dict], await self.store.async_load())
+        raw_storage = await self._async_load_data()
 
         if raw_storage is None:
             raw_storage = {"items": []}
 
         for item in raw_storage["items"]:
             self.data[item[CONF_ID]] = item
-            await self.notify_change(CHANGE_ADDED, item[CONF_ID], item)
+
+        await self.notify_changes(
+            [
+                CollectionChangeSet(CHANGE_ADDED, item[CONF_ID], item)
+                for item in raw_storage["items"]
+            ]
+        )
 
     @abstractmethod
     async def _process_create_data(self, data: dict) -> dict:
@@ -188,7 +223,9 @@ class StorageCollection(ObservableCollection):
         item[CONF_ID] = self.id_manager.generate_id(self._get_suggested_id(item))
         self.data[item[CONF_ID]] = item
         self._async_schedule_save()
-        await self.notify_change(CHANGE_ADDED, item[CONF_ID], item)
+        await self.notify_changes(
+            [CollectionChangeSet(CHANGE_ADDED, item[CONF_ID], item)]
+        )
         return item
 
     async def async_update_item(self, item_id: str, updates: dict) -> dict:
@@ -206,7 +243,9 @@ class StorageCollection(ObservableCollection):
         self.data[item_id] = updated
         self._async_schedule_save()
 
-        await self.notify_change(CHANGE_UPDATED, item_id, updated)
+        await self.notify_changes(
+            [CollectionChangeSet(CHANGE_UPDATED, item_id, updated)]
+        )
 
         return self.data[item_id]
 
@@ -215,10 +254,10 @@ class StorageCollection(ObservableCollection):
         if item_id not in self.data:
             raise ItemNotFound(item_id)
 
-        self.data.pop(item_id)
+        item = self.data.pop(item_id)
         self._async_schedule_save()
 
-        await self.notify_change(CHANGE_REMOVED, item_id, None)
+        await self.notify_changes([CollectionChangeSet(CHANGE_REMOVED, item_id, item)])
 
     @callback
     def _async_schedule_save(self) -> None:
@@ -231,6 +270,36 @@ class StorageCollection(ObservableCollection):
         return {"items": list(self.data.values())}
 
 
+class IDLessCollection(ObservableCollection):
+    """A collection without IDs."""
+
+    counter = 0
+
+    async def async_load(self, data: List[dict]) -> None:
+        """Load the collection. Overrides existing data."""
+        await self.notify_changes(
+            [
+                CollectionChangeSet(CHANGE_REMOVED, item_id, item)
+                for item_id, item in list(self.data.items())
+            ]
+        )
+
+        self.data.clear()
+
+        for item in data:
+            self.counter += 1
+            item_id = f"fakeid-{self.counter}"
+
+            self.data[item_id] = item
+
+        await self.notify_changes(
+            [
+                CollectionChangeSet(CHANGE_ADDED, item_id, item)
+                for item_id, item in self.data.items()
+            ]
+        )
+
+
 @callback
 def attach_entity_component_collection(
     entity_component: EntityComponent,
@@ -240,12 +309,10 @@ def attach_entity_component_collection(
     """Map a collection to an entity component."""
     entities = {}
 
-    async def _collection_changed(
-        change_type: str, item_id: str, config: Optional[dict]
-    ) -> None:
+    async def _collection_changed(change_type: str, item_id: str, config: dict) -> None:
         """Handle a collection change."""
         if change_type == CHANGE_ADDED:
-            entity = create_entity(cast(dict, config))
+            entity = create_entity(config)
             await entity_component.async_add_entities([entity])
             entities[item_id] = entity
             return
@@ -270,9 +337,7 @@ def attach_entity_registry_cleaner(
 ) -> None:
     """Attach a listener to clean up entity registry on collection changes."""
 
-    async def _collection_changed(
-        change_type: str, item_id: str, config: Optional[Dict]
-    ) -> None:
+    async def _collection_changed(change_type: str, item_id: str, config: Dict) -> None:
         """Handle a collection change: clean up entity registry on removals."""
         if change_type != CHANGE_REMOVED:
             return
@@ -311,7 +376,13 @@ class StorageCollectionWebsocket:
         return f"{self.model_name}_id"
 
     @callback
-    def async_setup(self, hass: HomeAssistant, *, create_list: bool = True) -> None:
+    def async_setup(
+        self,
+        hass: HomeAssistant,
+        *,
+        create_list: bool = True,
+        create_create: bool = True,
+    ) -> None:
         """Set up the websocket commands."""
         if create_list:
             websocket_api.async_register_command(
@@ -323,19 +394,20 @@ class StorageCollectionWebsocket:
                 ),
             )
 
-        websocket_api.async_register_command(
-            hass,
-            f"{self.api_prefix}/create",
-            websocket_api.require_admin(
-                websocket_api.async_response(self.ws_create_item)
-            ),
-            websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend(
-                {
-                    **self.create_schema,
-                    vol.Required("type"): f"{self.api_prefix}/create",
-                }
-            ),
-        )
+        if create_create:
+            websocket_api.async_register_command(
+                hass,
+                f"{self.api_prefix}/create",
+                websocket_api.require_admin(
+                    websocket_api.async_response(self.ws_create_item)
+                ),
+                websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend(
+                    {
+                        **self.create_schema,
+                        vol.Required("type"): f"{self.api_prefix}/create",
+                    }
+                ),
+            )
 
         websocket_api.async_register_command(
             hass,

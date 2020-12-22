@@ -3,7 +3,12 @@ import logging
 import os
 
 from pyicloud import PyiCloudService
-from pyicloud.exceptions import PyiCloudException, PyiCloudFailedLoginException
+from pyicloud.exceptions import (
+    PyiCloudException,
+    PyiCloudFailedLoginException,
+    PyiCloudNoDevicesException,
+    PyiCloudServiceNotActivatedException,
+)
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -12,8 +17,10 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from .const import (
     CONF_GPS_ACCURACY_THRESHOLD,
     CONF_MAX_INTERVAL,
+    CONF_WITH_FAMILY,
     DEFAULT_GPS_ACCURACY_THRESHOLD,
     DEFAULT_MAX_INTERVAL,
+    DEFAULT_WITH_FAMILY,
     STORAGE_KEY,
     STORAGE_VERSION,
 )
@@ -36,33 +43,119 @@ class IcloudFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         self.api = None
         self._username = None
         self._password = None
-        self._account_name = None
+        self._with_family = None
         self._max_interval = None
         self._gps_accuracy_threshold = None
 
         self._trusted_device = None
         self._verification_code = None
 
-    async def _show_setup_form(self, user_input=None, errors=None):
+        self._existing_entry = None
+        self._description_placeholders = None
+
+    def _show_setup_form(self, user_input=None, errors=None, step_id="user"):
         """Show the setup form to the user."""
 
         if user_input is None:
             user_input = {}
 
+        if step_id == "user":
+            schema = {
+                vol.Required(
+                    CONF_USERNAME, default=user_input.get(CONF_USERNAME, "")
+                ): str,
+                vol.Required(
+                    CONF_PASSWORD, default=user_input.get(CONF_PASSWORD, "")
+                ): str,
+                vol.Optional(
+                    CONF_WITH_FAMILY,
+                    default=user_input.get(CONF_WITH_FAMILY, DEFAULT_WITH_FAMILY),
+                ): bool,
+            }
+        else:
+            schema = {
+                vol.Required(
+                    CONF_PASSWORD, default=user_input.get(CONF_PASSWORD, "")
+                ): str,
+            }
+
         return self.async_show_form(
-            step_id="user",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_USERNAME, default=user_input.get(CONF_USERNAME, "")
-                    ): str,
-                    vol.Required(
-                        CONF_PASSWORD, default=user_input.get(CONF_PASSWORD, "")
-                    ): str,
-                }
-            ),
+            step_id=step_id,
+            data_schema=vol.Schema(schema),
             errors=errors or {},
+            description_placeholders=self._description_placeholders,
         )
+
+    async def _validate_and_create_entry(self, user_input, step_id):
+        """Check if config is valid and create entry if so."""
+        self._password = user_input[CONF_PASSWORD]
+
+        extra_inputs = user_input
+
+        # If an existing entry was found, meaning this is a password update attempt,
+        # use those to get config values that aren't changing
+        if self._existing_entry:
+            extra_inputs = self._existing_entry
+
+        self._username = extra_inputs[CONF_USERNAME]
+        self._with_family = extra_inputs.get(CONF_WITH_FAMILY, DEFAULT_WITH_FAMILY)
+        self._max_interval = extra_inputs.get(CONF_MAX_INTERVAL, DEFAULT_MAX_INTERVAL)
+        self._gps_accuracy_threshold = extra_inputs.get(
+            CONF_GPS_ACCURACY_THRESHOLD, DEFAULT_GPS_ACCURACY_THRESHOLD
+        )
+
+        # Check if already configured
+        if self.unique_id is None:
+            await self.async_set_unique_id(self._username)
+            self._abort_if_unique_id_configured()
+
+        try:
+            self.api = await self.hass.async_add_executor_job(
+                PyiCloudService,
+                self._username,
+                self._password,
+                self.hass.helpers.storage.Store(STORAGE_VERSION, STORAGE_KEY).path,
+                True,
+                None,
+                self._with_family,
+            )
+        except PyiCloudFailedLoginException as error:
+            _LOGGER.error("Error logging into iCloud service: %s", error)
+            self.api = None
+            errors = {CONF_PASSWORD: "invalid_auth"}
+            return self._show_setup_form(user_input, errors, step_id)
+
+        if self.api.requires_2sa:
+            return await self.async_step_trusted_device()
+
+        try:
+            devices = await self.hass.async_add_executor_job(
+                getattr, self.api, "devices"
+            )
+            if not devices:
+                raise PyiCloudNoDevicesException()
+        except (PyiCloudServiceNotActivatedException, PyiCloudNoDevicesException):
+            _LOGGER.error("No device found in the iCloud account: %s", self._username)
+            self.api = None
+            return self.async_abort(reason="no_device")
+
+        data = {
+            CONF_USERNAME: self._username,
+            CONF_PASSWORD: self._password,
+            CONF_WITH_FAMILY: self._with_family,
+            CONF_MAX_INTERVAL: self._max_interval,
+            CONF_GPS_ACCURACY_THRESHOLD: self._gps_accuracy_threshold,
+        }
+
+        # If this is a password update attempt, update the entry instead of creating one
+        if step_id == "user":
+            return self.async_create_entry(title=self._username, data=data)
+
+        for entry in self.hass.config_entries.async_entries(DOMAIN):
+            if entry.unique_id == self.unique_id:
+                self.hass.config_entries.async_update_entry(entry, data=data)
+                await self.hass.config_entries.async_reload(entry.entry_id)
+                return self.async_abort(reason="reauth_successful")
 
     async def async_step_user(self, user_input=None):
         """Handle a flow initiated by the user."""
@@ -74,46 +167,30 @@ class IcloudFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             await self.hass.async_add_executor_job(os.makedirs, icloud_dir.path)
 
         if user_input is None:
-            return await self._show_setup_form(user_input, errors)
+            return self._show_setup_form(user_input, errors)
 
-        self._username = user_input[CONF_USERNAME]
-        self._password = user_input[CONF_PASSWORD]
-        self._max_interval = user_input.get(CONF_MAX_INTERVAL, DEFAULT_MAX_INTERVAL)
-        self._gps_accuracy_threshold = user_input.get(
-            CONF_GPS_ACCURACY_THRESHOLD, DEFAULT_GPS_ACCURACY_THRESHOLD
-        )
-
-        # Check if already configured
-        if self.unique_id is None:
-            await self.async_set_unique_id(self._username)
-            self._abort_if_unique_id_configured()
-
-        try:
-            self.api = await self.hass.async_add_executor_job(
-                PyiCloudService, self._username, self._password, icloud_dir.path
-            )
-        except PyiCloudFailedLoginException as error:
-            _LOGGER.error("Error logging into iCloud service: %s", error)
-            self.api = None
-            errors[CONF_USERNAME] = "login"
-            return await self._show_setup_form(user_input, errors)
-
-        if self.api.requires_2fa:
-            return await self.async_step_trusted_device()
-
-        return self.async_create_entry(
-            title=self._username,
-            data={
-                CONF_USERNAME: self._username,
-                CONF_PASSWORD: self._password,
-                CONF_MAX_INTERVAL: self._max_interval,
-                CONF_GPS_ACCURACY_THRESHOLD: self._gps_accuracy_threshold,
-            },
-        )
+        return await self._validate_and_create_entry(user_input, "user")
 
     async def async_step_import(self, user_input):
         """Import a config entry."""
         return await self.async_step_user(user_input)
+
+    async def async_step_reauth(self, user_input=None):
+        """Update password for a config entry that can't authenticate."""
+        # Store existing entry data so it can be used later and set unique ID
+        # so existing config entry can be updated
+        if not self._existing_entry:
+            await self.async_set_unique_id(user_input.pop("unique_id"))
+            self._existing_entry = user_input.copy()
+            self._description_placeholders = {"username": user_input[CONF_USERNAME]}
+            user_input = None
+
+        if user_input is None:
+            return self._show_setup_form(step_id=config_entries.SOURCE_REAUTH)
+
+        return await self._validate_and_create_entry(
+            user_input, config_entries.SOURCE_REAUTH
+        )
 
     async def async_step_trusted_device(self, user_input=None, errors=None):
         """We need a trusted device."""
@@ -195,6 +272,7 @@ class IcloudFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             {
                 CONF_USERNAME: self._username,
                 CONF_PASSWORD: self._password,
+                CONF_WITH_FAMILY: self._with_family,
                 CONF_MAX_INTERVAL: self._max_interval,
                 CONF_GPS_ACCURACY_THRESHOLD: self._gps_accuracy_threshold,
             }

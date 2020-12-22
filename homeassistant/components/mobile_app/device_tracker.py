@@ -1,6 +1,4 @@
 """Device tracker platform that adds support for OwnTracks over MQTT."""
-import logging
-
 from homeassistant.components.device_tracker import (
     ATTR_BATTERY,
     ATTR_GPS,
@@ -24,7 +22,6 @@ from .const import (
 )
 from .helpers import device_info
 
-_LOGGER = logging.getLogger(__name__)
 ATTR_KEYS = (ATTR_ALTITUDE, ATTR_COURSE, ATTR_SPEED, ATTR_VERTICAL_ACCURACY)
 
 
@@ -99,11 +96,6 @@ class MobileAppEntity(TrackerEntity, RestoreEntity):
     def name(self):
         """Return the name of the device."""
         return self._entry.data[ATTR_DEVICE_NAME]
-
-    @property
-    def should_poll(self):
-        """No polling needed."""
-        return False
 
     @property
     def source_type(self):

@@ -10,12 +10,15 @@ import jwt
 
 # Typing imports
 from homeassistant.components.http import HomeAssistantView
-from homeassistant.const import CLOUD_NEVER_EXPOSED_ENTITIES
+from homeassistant.const import (
+    CLOUD_NEVER_EXPOSED_ENTITIES,
+    HTTP_INTERNAL_SERVER_ERROR,
+    HTTP_UNAUTHORIZED,
+)
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
 from .const import (
-    CONF_API_KEY,
     CONF_CLIENT_EMAIL,
     CONF_ENTITY_CONFIG,
     CONF_EXPOSE,
@@ -30,6 +33,7 @@ from .const import (
     HOMEGRAPH_TOKEN_URL,
     REPORT_STATE_BASE_URL,
     REQUEST_SYNC_BASE_URL,
+    SOURCE_CLOUD,
 )
 from .helpers import AbstractConfig
 from .smart_home import async_handle_message
@@ -52,7 +56,7 @@ def _get_homegraph_jwt(time, iss, key):
 
 async def _get_homegraph_token(hass, jwt_signed):
     headers = {
-        "Authorization": "Bearer {}".format(jwt_signed),
+        "Authorization": f"Bearer {jwt_signed}",
         "Content-Type": "application/x-www-form-urlencoded",
     }
     data = {
@@ -130,11 +134,7 @@ class GoogleConfig(AbstractConfig):
         return True
 
     async def _async_request_sync_devices(self, agent_user_id: str):
-        if CONF_API_KEY in self._config:
-            await self.async_call_homegraph_api_key(
-                REQUEST_SYNC_BASE_URL, {"agentUserId": agent_user_id}
-            )
-        elif CONF_SERVICE_ACCOUNT in self._config:
+        if CONF_SERVICE_ACCOUNT in self._config:
             await self.async_call_homegraph_api(
                 REQUEST_SYNC_BASE_URL, {"agentUserId": agent_user_id}
             )
@@ -159,32 +159,13 @@ class GoogleConfig(AbstractConfig):
             self._access_token = token["access_token"]
             self._access_token_renew = now + timedelta(seconds=token["expires_in"])
 
-    async def async_call_homegraph_api_key(self, url, data):
-        """Call a homegraph api with api key authentication."""
-        websession = async_get_clientsession(self.hass)
-        try:
-            res = await websession.post(
-                url, params={"key": self._config.get(CONF_API_KEY)}, json=data
-            )
-            _LOGGER.debug(
-                "Response on %s with data %s was %s", url, data, await res.text()
-            )
-            res.raise_for_status()
-            return res.status
-        except ClientResponseError as error:
-            _LOGGER.error("Request for %s failed: %d", url, error.status)
-            return error.status
-        except (asyncio.TimeoutError, ClientError):
-            _LOGGER.error("Could not contact %s", url)
-            return 500
-
     async def async_call_homegraph_api(self, url, data):
-        """Call a homegraph api with authenticaiton."""
+        """Call a homegraph api with authentication."""
         session = async_get_clientsession(self.hass)
 
         async def _call():
             headers = {
-                "Authorization": "Bearer {}".format(self._access_token),
+                "Authorization": f"Bearer {self._access_token}",
                 "X-GFE-SSL": "yes",
             }
             async with session.post(url, headers=headers, json=data) as res:
@@ -199,7 +180,7 @@ class GoogleConfig(AbstractConfig):
             try:
                 return await _call()
             except ClientResponseError as error:
-                if error.status == 401:
+                if error.status == HTTP_UNAUTHORIZED:
                     _LOGGER.warning(
                         "Request for %s unauthorized, renewing token and retrying", url
                     )
@@ -211,7 +192,7 @@ class GoogleConfig(AbstractConfig):
             return error.status
         except (asyncio.TimeoutError, ClientError):
             _LOGGER.error("Could not contact %s", url)
-            return 500
+            return HTTP_INTERNAL_SERVER_ERROR
 
     async def async_report_state(self, message, agent_user_id: str):
         """Send a state report to Google."""
@@ -238,6 +219,10 @@ class GoogleAssistantView(HomeAssistantView):
         """Handle Google Assistant requests."""
         message: dict = await request.json()
         result = await async_handle_message(
-            request.app["hass"], self.config, request["hass_user"].id, message
+            request.app["hass"],
+            self.config,
+            request["hass_user"].id,
+            message,
+            SOURCE_CLOUD,
         )
         return self.json(result)

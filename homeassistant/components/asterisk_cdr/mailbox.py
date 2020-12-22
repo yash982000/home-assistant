@@ -1,7 +1,6 @@
 """Support for the Asterisk CDR interface."""
 import datetime
 import hashlib
-import logging
 
 from homeassistant.components.asterisk_mbox import (
     DOMAIN as ASTERISK_DOMAIN,
@@ -10,8 +9,6 @@ from homeassistant.components.asterisk_mbox import (
 from homeassistant.components.mailbox import Mailbox
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-
-_LOGGER = logging.getLogger(__name__)
 
 MAILBOX_NAME = "asterisk_cdr"
 
@@ -49,8 +46,10 @@ class AsteriskCDR(Mailbox):
                 "duration": entry["duration"],
             }
             sha = hashlib.sha256(str(entry).encode("utf-8")).hexdigest()
-            msg = "Destination: {}\nApplication: {}\n Context: {}".format(
-                entry["dest"], entry["application"], entry["context"]
+            msg = (
+                f"Destination: {entry['dest']}\n"
+                f"Application: {entry['application']}\n "
+                f"Context: {entry['context']}"
             )
             cdr.append({"info": info, "sha": sha, "text": msg})
         self.cdr = cdr

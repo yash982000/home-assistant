@@ -90,21 +90,16 @@ async def fetch_redirect_uris(hass, url):
 
     except asyncio.TimeoutError:
         _LOGGER.error("Timeout while looking up redirect_uri %s", url)
-        pass
     except aiohttp.client_exceptions.ClientSSLError:
         _LOGGER.error("SSL error while looking up redirect_uri %s", url)
-        pass
     except aiohttp.client_exceptions.ClientOSError as ex:
         _LOGGER.error("OS error while looking up redirect_uri %s: %s", url, ex.strerror)
-        pass
     except aiohttp.client_exceptions.ClientConnectionError:
         _LOGGER.error(
             "Low level connection error while looking up redirect_uri %s", url
         )
-        pass
     except aiohttp.client_exceptions.ClientError:
         _LOGGER.error("Unknown error while looking up redirect_uri %s", url)
-        pass
 
     # Authorization endpoints verifying that a redirect_uri is allowed for use
     # by a client MUST look for an exact match of the given redirect_uri in the
@@ -175,8 +170,8 @@ def _parse_client_id(client_id):
     try:
         # parts raises ValueError when port cannot be parsed as int
         parts.port
-    except ValueError:
-        raise ValueError("Client ID contains invalid port")
+    except ValueError as ex:
+        raise ValueError("Client ID contains invalid port") from ex
 
     # Additionally, hostnames
     # MUST be domain names or a loopback interface and

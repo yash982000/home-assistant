@@ -1,7 +1,4 @@
 """Support for Vivotek IP Cameras."""
-
-import logging
-
 from libpyvivotek import VivotekCamera
 import voluptuous as vol
 
@@ -19,14 +16,12 @@ from homeassistant.const import (
 )
 from homeassistant.helpers import config_validation as cv
 
-_LOGGER = logging.getLogger(__name__)
-
 CONF_FRAMERATE = "framerate"
 CONF_SECURITY_LEVEL = "security_level"
 CONF_STREAM_PATH = "stream_path"
 
-DEFAULT_CAMERA_BRAND = "Vivotek"
-DEFAULT_NAME = "Vivotek Camera"
+DEFAULT_CAMERA_BRAND = "VIVOTEK"
+DEFAULT_NAME = "VIVOTEK Camera"
 DEFAULT_EVENT_0_KEY = "event_i0_enable"
 DEFAULT_SECURITY_LEVEL = "admin"
 DEFAULT_STREAM_SOURCE = "live.sdp"
@@ -52,9 +47,9 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 def setup_platform(hass, config, add_entities, discovery_info=None):
     """Set up a Vivotek IP Camera."""
     creds = f"{config[CONF_USERNAME]}:{config[CONF_PASSWORD]}"
-    args = dict(
-        config=config,
-        cam=VivotekCamera(
+    args = {
+        "config": config,
+        "cam": VivotekCamera(
             host=config[CONF_IP_ADDRESS],
             port=(443 if config[CONF_SSL] else 80),
             verify_ssl=config[CONF_VERIFY_SSL],
@@ -63,8 +58,8 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
             digest_auth=config[CONF_AUTHENTICATION] == HTTP_DIGEST_AUTHENTICATION,
             sec_lvl=config[CONF_SECURITY_LEVEL],
         ),
-        stream_source=f"rtsp://{creds}@{config[CONF_IP_ADDRESS]}:554/{config[CONF_STREAM_PATH]}",
-    )
+        "stream_source": f"rtsp://{creds}@{config[CONF_IP_ADDRESS]}:554/{config[CONF_STREAM_PATH]}",
+    }
     add_entities([VivotekCam(**args)], True)
 
 

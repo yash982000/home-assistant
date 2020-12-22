@@ -34,7 +34,7 @@ from homeassistant.helpers.service import verify_domain_control
 from homeassistant.helpers.typing import ConfigType, HomeAssistantType
 import homeassistant.util.dt as dt_util
 
-from .const import DOMAIN, EVO_FOLLOW, GWS, STORAGE_KEY, STORAGE_VERSION, TCS
+from .const import DOMAIN, GWS, STORAGE_KEY, STORAGE_VER, TCS, UTC_OFFSET
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -86,29 +86,29 @@ SET_ZONE_OVERRIDE_SCHEMA = vol.Schema(
             vol.Coerce(float), vol.Range(min=4.0, max=35.0)
         ),
         vol.Optional(ATTR_DURATION_UNTIL): vol.All(
-            cv.time_period, vol.Range(min=timedelta(days=0), max=timedelta(days=1)),
+            cv.time_period, vol.Range(min=timedelta(days=0), max=timedelta(days=1))
         ),
     }
 )
 # system mode schemas are built dynamically, below
 
 
-def _local_dt_to_aware(dt_naive: dt) -> dt:
+def _dt_local_to_aware(dt_naive: dt) -> dt:
     dt_aware = dt_util.now() + (dt_naive - dt.now())
     if dt_aware.microsecond >= 500000:
         dt_aware += timedelta(seconds=1)
     return dt_aware.replace(microsecond=0)
 
 
-def _dt_to_local_naive(dt_aware: dt) -> dt:
+def _dt_aware_to_naive(dt_aware: dt) -> dt:
     dt_naive = dt.now() + (dt_aware - dt_util.now())
     if dt_naive.microsecond >= 500000:
         dt_naive += timedelta(seconds=1)
     return dt_naive.replace(microsecond=0)
 
 
-def convert_until(status_dict, until_key) -> str:
-    """Convert datetime string from "%Y-%m-%dT%H:%M:%SZ" to local/aware/isoformat."""
+def convert_until(status_dict: dict, until_key: str) -> None:
+    """Reformat a dt str from "%Y-%m-%dT%H:%M:%SZ" as local/aware/isoformat."""
     if until_key in status_dict:  # only present for certain modes
         dt_utc_naive = dt_util.parse_datetime(status_dict[until_key])
         status_dict[until_key] = dt_util.as_local(dt_utc_naive).isoformat()
@@ -121,7 +121,7 @@ def convert_dict(dictionary: Dict[str, Any]) -> Dict[str, Any]:
         """Convert a string to snake_case."""
         string = re.sub(r"[\-\.\s]", "_", str(key))
         return (string[0]).lower() + re.sub(
-            r"[A-Z]", lambda matched: "_" + matched.group(0).lower(), string[1:]
+            r"[A-Z]", lambda matched: f"_{matched.group(0).lower()}", string[1:]
         )
 
     return {
@@ -140,40 +140,37 @@ def _handle_exception(err) -> bool:
     except evohomeasync2.AuthenticationError:
         _LOGGER.error(
             "Failed to authenticate with the vendor's server. "
-            "Check your network and the vendor's service status page. "
-            "Also check that your username and password are correct. "
+            "Check your username and password. NB: Some special password characters "
+            "that work correctly via the website will not work via the web API. "
             "Message is: %s",
             err,
         )
-        return False
 
     except aiohttp.ClientConnectionError:
-        # this appears to be a common occurance with the vendor's servers
+        # this appears to be a common occurrence with the vendor's servers
         _LOGGER.warning(
             "Unable to connect with the vendor's server. "
             "Check your network and the vendor's service status page. "
             "Message is: %s",
             err,
         )
-        return False
 
     except aiohttp.ClientResponseError:
         if err.status == HTTP_SERVICE_UNAVAILABLE:
             _LOGGER.warning(
                 "The vendor says their server is currently unavailable. "
-                "Check the vendor's service status page."
+                "Check the vendor's service status page"
             )
-            return False
 
-        if err.status == HTTP_TOO_MANY_REQUESTS:
+        elif err.status == HTTP_TOO_MANY_REQUESTS:
             _LOGGER.warning(
                 "The vendor's API rate limit has been exceeded. "
-                "If this message persists, consider increasing the %s.",
+                "If this message persists, consider increasing the %s",
                 CONF_SCAN_INTERVAL,
             )
-            return False
 
-        raise  # we don't expect/handle any other Exceptions
+        else:
+            raise  # we don't expect/handle any other Exceptions
 
 
 async def async_setup(hass: HomeAssistantType, config: ConfigType) -> bool:
@@ -184,20 +181,20 @@ async def async_setup(hass: HomeAssistantType, config: ConfigType) -> bool:
         tokens = dict(app_storage if app_storage else {})
 
         if tokens.pop(CONF_USERNAME, None) != config[DOMAIN][CONF_USERNAME]:
-            # any tokens wont be valid, and store might be be corrupt
+            # any tokens won't be valid, and store might be be corrupt
             await store.async_save({})
             return ({}, None)
 
         # evohomeasync2 requires naive/local datetimes as strings
         if tokens.get(ACCESS_TOKEN_EXPIRES) is not None:
-            tokens[ACCESS_TOKEN_EXPIRES] = _dt_to_local_naive(
+            tokens[ACCESS_TOKEN_EXPIRES] = _dt_aware_to_naive(
                 dt_util.parse_datetime(tokens[ACCESS_TOKEN_EXPIRES])
             )
 
         user_data = tokens.pop(USER_DATA, None)
         return (tokens, user_data)
 
-    store = hass.helpers.storage.Store(STORAGE_VERSION, STORAGE_KEY)
+    store = hass.helpers.storage.Store(STORAGE_VER, STORAGE_KEY)
     tokens, user_data = await load_auth_tokens(store)
 
     client_v2 = evohomeasync2.EvohomeClient(
@@ -217,18 +214,22 @@ async def async_setup(hass: HomeAssistantType, config: ConfigType) -> bool:
 
     loc_idx = config[DOMAIN][CONF_LOCATION_IDX]
     try:
-        loc_config = client_v2.installation_info[loc_idx][GWS][0][TCS][0]
+        loc_config = client_v2.installation_info[loc_idx]
     except IndexError:
         _LOGGER.error(
             "Config error: '%s' = %s, but the valid range is 0-%s. "
-            "Unable to continue. Fix any configuration errors and restart HA.",
+            "Unable to continue. Fix any configuration errors and restart HA",
             CONF_LOCATION_IDX,
             loc_idx,
             len(client_v2.installation_info) - 1,
         )
         return False
 
-    _LOGGER.debug("Config = %s", loc_config)
+    if _LOGGER.isEnabledFor(logging.DEBUG):
+        _config = {"locationInfo": {"timeZone": None}, GWS: [{TCS: None}]}
+        _config["locationInfo"]["timeZone"] = loc_config["locationInfo"]["timeZone"]
+        _config[GWS][0][TCS] = loc_config[GWS][0][TCS]
+        _LOGGER.debug("Config = %s", _config)
 
     client_v1 = evohomeasync.EvohomeClient(
         client_v2.username,
@@ -266,7 +267,7 @@ def setup_service_functions(hass: HomeAssistantType, broker):
 
     Not all Honeywell TCC-compatible systems support all operating modes. In addition,
     each mode will require any of four distinct service schemas. This has to be
-    enumerated before registering the approperiate handlers.
+    enumerated before registering the appropriate handlers.
 
     It appears that all TCC-compatible systems support the same three zones modes.
     """
@@ -393,12 +394,15 @@ class EvoBroker:
         loc_idx = params[CONF_LOCATION_IDX]
         self.config = client.installation_info[loc_idx][GWS][0][TCS][0]
         self.tcs = client.locations[loc_idx]._gateways[0]._control_systems[0]
+        self.tcs_utc_offset = timedelta(
+            minutes=client.locations[loc_idx].timeZone[UTC_OFFSET]
+        )
         self.temps = {}
 
     async def save_auth_tokens(self) -> None:
         """Save access tokens and session IDs to the store for later use."""
         # evohomeasync2 uses naive/local datetimes
-        access_token_expires = _local_dt_to_aware(self.client.access_token_expires)
+        access_token_expires = _dt_local_to_aware(self.client.access_token_expires)
 
         app_storage = {CONF_USERNAME: self.client.username}
         app_storage[REFRESH_TOKEN] = self.client.refresh_token
@@ -415,20 +419,20 @@ class EvoBroker:
 
         await self._store.async_save(app_storage)
 
-    async def call_client_api(self, api_function, refresh=True) -> Any:
-        """Call a client API."""
+    async def call_client_api(self, api_function, update_state=True) -> Any:
+        """Call a client API and update the broker state if required."""
         try:
             result = await api_function
         except (aiohttp.ClientError, evohomeasync2.AuthenticationError) as err:
-            if not _handle_exception(err):
-                return
+            _handle_exception(err)
+            return
 
-        if refresh:
-            self.hass.helpers.event.async_call_later(1, self.async_update())
+        if update_state:  # wait a moment for system to quiesce before updating state
+            self.hass.helpers.event.async_call_later(1, self._update_v2_api_state)
 
         return result
 
-    async def _update_v1(self, *args, **kwargs) -> None:
+    async def _update_v1_api_temps(self, *args, **kwargs) -> None:
         """Get the latest high-precision temperatures of the default Location."""
 
         def get_session_id(client_v1) -> Optional[str]:
@@ -469,7 +473,7 @@ class EvoBroker:
         if session_id != get_session_id(self.client_v1):
             await self.save_auth_tokens()
 
-    async def _update_v2(self, *args, **kwargs) -> None:
+    async def _update_v2_api_state(self, *args, **kwargs) -> None:
         """Get the latest modes, temperatures, setpoints of a Location."""
         access_token = self.client.access_token
 
@@ -481,7 +485,7 @@ class EvoBroker:
         else:
             async_dispatcher_send(self.hass, DOMAIN)
 
-            _LOGGER.debug("Status = %s", status[GWS][0][TCS][0])
+            _LOGGER.debug("Status = %s", status)
 
         if access_token != self.client.access_token:
             await self.save_auth_tokens()
@@ -493,13 +497,10 @@ class EvoBroker:
         operating mode of the Controller and the current temp of its children (e.g.
         Zones, DHW controller).
         """
-        await self._update_v2()
-
         if self.client_v1:
-            await self._update_v1()
+            await self._update_v1_api_temps()
 
-        # inform the evohome devices that state data has been updated
-        async_dispatcher_send(self.hass, DOMAIN)
+        await self._update_v2_api_state()
 
 
 class EvoDevice(Entity):
@@ -607,13 +608,14 @@ class EvoChild(EvoDevice):
     @property
     def current_temperature(self) -> Optional[float]:
         """Return the current temperature of a Zone."""
-        if not self._evo_device.temperatureStatus["isAvailable"]:
-            return None
-
-        if self._evo_broker.temps:
+        if (
+            self._evo_broker.temps
+            and self._evo_broker.temps[self._evo_device.zoneId] != 128
+        ):
             return self._evo_broker.temps[self._evo_device.zoneId]
 
-        return self._evo_device.temperatureStatus["temperature"]
+        if self._evo_device.temperatureStatus["isAvailable"]:
+            return self._evo_device.temperatureStatus["temperature"]
 
     @property
     def setpoints(self) -> Dict[str, Any]:
@@ -621,11 +623,16 @@ class EvoChild(EvoDevice):
 
         Only Zones & DHW controllers (but not the TCS) can have schedules.
         """
-        if not self._schedule["DailySchedules"]:
-            return {}  # no schedule {'DailySchedules': []}, so no scheduled setpoints
+
+        def _dt_evo_to_aware(dt_naive: dt, utc_offset: timedelta) -> dt:
+            dt_aware = dt_naive.replace(tzinfo=dt_util.UTC) - utc_offset
+            return dt_util.as_local(dt_aware)
+
+        if not self._schedule or not self._schedule.get("DailySchedules"):
+            return {}  # no scheduled setpoints when {'DailySchedules': []}
 
         day_time = dt_util.now()
-        day_of_week = int(day_time.strftime("%w"))  # 0 is Sunday
+        day_of_week = day_time.weekday()  # for evohome, 0 is Monday
         time_of_day = day_time.strftime("%H:%M:%S")
 
         try:
@@ -650,11 +657,12 @@ class EvoChild(EvoDevice):
                 day = self._schedule["DailySchedules"][(day_of_week + offset) % 7]
                 switchpoint = day["Switchpoints"][idx]
 
-                dt_local_aware = _local_dt_to_aware(
-                    dt_util.parse_datetime(f"{sp_date}T{switchpoint['TimeOfDay']}")
+                dt_aware = _dt_evo_to_aware(
+                    dt_util.parse_datetime(f"{sp_date}T{switchpoint['TimeOfDay']}"),
+                    self._evo_broker.tcs_utc_offset,
                 )
 
-                self._setpoints[f"{key}_sp_from"] = dt_local_aware.isoformat()
+                self._setpoints[f"{key}_sp_from"] = dt_aware.isoformat()
                 try:
                     self._setpoints[f"{key}_sp_temp"] = switchpoint["heatSetpoint"]
                 except KeyError:
@@ -663,19 +671,16 @@ class EvoChild(EvoDevice):
         except IndexError:
             self._setpoints = {}
             _LOGGER.warning(
-                "Failed to get setpoints - please report as an issue", exc_info=True
+                "Failed to get setpoints, report as an issue if this error persists",
+                exc_info=True,
             )
 
         return self._setpoints
 
     async def _update_schedule(self) -> None:
         """Get the latest schedule, if any."""
-        if "DailySchedules" in self._schedule and not self._schedule["DailySchedules"]:
-            if not self._evo_device.setpointStatus["setpointMode"] == EVO_FOLLOW:
-                return  # avoid unnecessary I/O - there's nothing to update
-
         self._schedule = await self._evo_broker.call_client_api(
-            self._evo_device.schedule(), refresh=False
+            self._evo_device.schedule(), update_state=False
         )
 
         _LOGGER.debug("Schedule['%s'] = %s", self.name, self._schedule)

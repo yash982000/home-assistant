@@ -59,8 +59,9 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
     for key in services:
         sensors.append(ObihaiServiceSensors(pyobihai, serial, key))
 
-    for key in line_services:
-        sensors.append(ObihaiServiceSensors(pyobihai, serial, key))
+    if line_services is not None:
+        for key in line_services:
+            sensors.append(ObihaiServiceSensors(pyobihai, serial, key))
 
     for key in call_direction:
         sensors.append(ObihaiServiceSensors(pyobihai, serial, key))
@@ -125,6 +126,16 @@ class ObihaiServiceSensors(Entity):
             if self._state == "Off Hook":
                 return "mdi:phone-in-talk"
             return "mdi:phone-hangup"
+        if "Service Status" in self._service_name:
+            if "OBiTALK Service Status" in self._service_name:
+                return "mdi:phone-check"
+            if self._state == "0":
+                return "mdi:phone-hangup"
+            return "mdi:phone-in-talk"
+        if "Reboot Required" in self._service_name:
+            if self._state == "false":
+                return "mdi:restart-off"
+            return "mdi:restart-alert"
         return "mdi:phone"
 
     def update(self):
@@ -136,8 +147,9 @@ class ObihaiServiceSensors(Entity):
 
         services = self._pyobihai.get_line_state()
 
-        if self._service_name in services:
-            self._state = services.get(self._service_name)
+        if services is not None:
+            if self._service_name in services:
+                self._state = services.get(self._service_name)
 
         call_direction = self._pyobihai.get_call_direction()
 

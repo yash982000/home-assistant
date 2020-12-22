@@ -3,18 +3,20 @@ import asyncio
 import datetime
 import logging
 
-from homekit.controller.ip_implementation import IpPairing
-from homekit.exceptions import (
+from aiohomekit.exceptions import (
     AccessoryDisconnectedError,
     AccessoryNotFoundError,
     EncryptionError,
 )
-from homekit.model.characteristics import CharacteristicsTypes
-from homekit.model.services import ServicesTypes
+from aiohomekit.model import Accessories
+from aiohomekit.model.characteristics import CharacteristicsTypes
+from aiohomekit.model.services import ServicesTypes
 
+from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_time_interval
 
-from .const import DOMAIN, ENTITY_MAP, HOMEKIT_ACCESSORY_DISPATCH
+from .const import CONTROLLER, DOMAIN, ENTITY_MAP, HOMEKIT_ACCESSORY_DISPATCH
+from .device_trigger import async_fire_triggers, async_setup_triggers_for_entry
 
 DEFAULT_SCAN_INTERVAL = datetime.timedelta(seconds=60)
 RETRY_INTERVAL = 60  # seconds
@@ -65,10 +67,17 @@ class HKDevice:
         # don't want to mutate a dict owned by a config entry.
         self.pairing_data = pairing_data.copy()
 
-        self.pairing = IpPairing(self.pairing_data)
+        self.pairing = hass.data[CONTROLLER].load_pairing(
+            self.pairing_data["AccessoryPairingID"], self.pairing_data
+        )
 
-        self.accessories = {}
+        self.accessories = None
         self.config_num = 0
+
+        self.entity_map = Accessories()
+
+        # A list of callbacks that turn HK accessories into entities
+        self.accessory_factories = []
 
         # A list of callbacks that turn HK service metadata into entities
         self.listeners = []
@@ -76,7 +85,7 @@ class HKDevice:
         # The platorms we have forwarded the config entry so far. If a new
         # accessory is added to a bridge we may have to load additional
         # platforms. We don't want to load all platforms up front if its just
-        # a lightbulb. And we dont want to forward a config entry twice
+        # a lightbulb. And we don't want to forward a config entry twice
         # (triggers a Config entry already set up error)
         self.platforms = set()
 
@@ -84,9 +93,9 @@ class HKDevice:
         # mapped to a HA entity.
         self.entities = []
 
-        # There are multiple entities sharing a single connection - only
-        # allow one entity to use pairing at once.
-        self.pairing_lock = asyncio.Lock()
+        # A map of aid -> device_id
+        # Useful when routing events to triggers
+        self.devices = {}
 
         self.available = True
 
@@ -106,6 +115,10 @@ class HKDevice:
         self._polling_lock = asyncio.Lock()
         self._polling_lock_warned = False
 
+        self.watchable_characteristics = []
+
+        self.pairing.dispatcher_connect(self.process_new_events)
+
     def add_pollable_characteristics(self, characteristics):
         """Add (aid, iid) pairs that we need to poll."""
         self.pollable_characteristics.extend(characteristics)
@@ -116,6 +129,18 @@ class HKDevice:
             char for char in self.pollable_characteristics if char[0] != accessory_id
         ]
 
+    def add_watchable_characteristics(self, characteristics):
+        """Add (aid, iid) pairs that we need to poll."""
+        self.watchable_characteristics.extend(characteristics)
+        self.hass.async_create_task(self.pairing.subscribe(characteristics))
+
+    def remove_watchable_characteristics(self, accessory_id):
+        """Remove all pollable characteristics by accessory id."""
+        self.watchable_characteristics = [
+            char for char in self.watchable_characteristics if char[0] != accessory_id
+        ]
+
+    @callback
     def async_set_unavailable(self):
         """Mark state of all entities on this connection as unavailable."""
         self.available = False
@@ -135,6 +160,8 @@ class HKDevice:
         self.accessories = cache["accessories"]
         self.config_num = cache["config_num"]
 
+        self.entity_map = Accessories.from_list(self.accessories)
+
         self._polling_interval_remover = async_track_time_interval(
             self.hass, self.async_update, DEFAULT_SCAN_INTERVAL
         )
@@ -142,6 +169,60 @@ class HKDevice:
         self.hass.async_create_task(self.async_process_entity_map())
 
         return True
+
+    async def async_create_devices(self):
+        """
+        Build device registry entries for all accessories paired with the bridge.
+
+        This is done as well as by the entities for 2 reasons. First, the bridge
+        might not have any entities attached to it. Secondly there are stateless
+        entities like doorbells and remote controls.
+        """
+        device_registry = await self.hass.helpers.device_registry.async_get_registry()
+
+        devices = {}
+
+        for accessory in self.entity_map.accessories:
+            info = accessory.services.first(
+                service_type=ServicesTypes.ACCESSORY_INFORMATION,
+            )
+
+            device_info = {
+                "identifiers": {
+                    (
+                        DOMAIN,
+                        "serial-number",
+                        info.value(CharacteristicsTypes.SERIAL_NUMBER),
+                    )
+                },
+                "name": info.value(CharacteristicsTypes.NAME),
+                "manufacturer": info.value(CharacteristicsTypes.MANUFACTURER, ""),
+                "model": info.value(CharacteristicsTypes.MODEL, ""),
+                "sw_version": info.value(CharacteristicsTypes.FIRMWARE_REVISION, ""),
+            }
+
+            if accessory.aid == 1:
+                # Accessory 1 is the root device (sometimes the only device, sometimes a bridge)
+                # Link the root device to the pairing id for the connection.
+                device_info["identifiers"].add((DOMAIN, "accessory-id", self.unique_id))
+            else:
+                # Every pairing has an accessory 1
+                # It *doesn't* have a via_device, as it is the device we are connecting to
+                # Every other accessory should use it as its via device.
+                device_info["via_device"] = (
+                    DOMAIN,
+                    "serial-number",
+                    self.connection_info["serial-number"],
+                )
+
+            device = device_registry.async_get_or_create(
+                config_entry_id=self.config_entry.entry_id,
+                **device_info,
+            )
+
+            devices[accessory.aid] = device.id
+
+        self.devices = devices
 
     async def async_process_entity_map(self):
         """
@@ -158,7 +239,15 @@ class HKDevice:
 
         await self.async_load_platforms()
 
+        await self.async_create_devices()
+
+        # Load any triggers for this config entry
+        await async_setup_triggers_for_entry(self.hass, self.config_entry)
+
         self.add_entities()
+
+        if self.watchable_characteristics:
+            await self.pairing.subscribe(self.watchable_characteristics)
 
         await self.async_update()
 
@@ -168,6 +257,8 @@ class HKDevice:
         """Stop interacting with device and prepare for removal from hass."""
         if self._polling_interval_remover:
             self._polling_interval_remover()
+
+        await self.pairing.unsubscribe(self.watchable_characteristics)
 
         unloads = []
         for platform in self.platforms:
@@ -184,14 +275,13 @@ class HKDevice:
     async def async_refresh_entity_map(self, config_num):
         """Handle setup of a HomeKit accessory."""
         try:
-            async with self.pairing_lock:
-                self.accessories = await self.hass.async_add_executor_job(
-                    self.pairing.list_accessories_and_characteristics
-                )
+            self.accessories = await self.pairing.list_accessories_and_characteristics()
         except AccessoryDisconnectedError:
             # If we fail to refresh this data then we will naturally retry
             # later when Bonjour spots c# is still not up to date.
             return False
+
+        self.entity_map = Accessories.from_list(self.accessories)
 
         self.hass.data[ENTITY_MAP].async_create_or_update_map(
             self.unique_id, config_num, self.accessories
@@ -202,29 +292,42 @@ class HKDevice:
 
         return True
 
+    def add_accessory_factory(self, add_entities_cb):
+        """Add a callback to run when discovering new entities for accessories."""
+        self.accessory_factories.append(add_entities_cb)
+        self._add_new_entities_for_accessory([add_entities_cb])
+
+    def _add_new_entities_for_accessory(self, handlers):
+        for accessory in self.entity_map.accessories:
+            for handler in handlers:
+                if (accessory.aid, None) in self.entities:
+                    continue
+                if handler(accessory):
+                    self.entities.append((accessory.aid, None))
+                    break
+
     def add_listener(self, add_entities_cb):
-        """Add a callback to run when discovering new entities."""
+        """Add a callback to run when discovering new entities for services."""
         self.listeners.append(add_entities_cb)
         self._add_new_entities([add_entities_cb])
 
     def add_entities(self):
         """Process the entity map and create HA entities."""
         self._add_new_entities(self.listeners)
+        self._add_new_entities_for_accessory(self.accessory_factories)
 
     def _add_new_entities(self, callbacks):
-        for accessory in self.accessories:
-            aid = accessory["aid"]
-            for service in accessory["services"]:
-                iid = service["iid"]
-                stype = ServicesTypes.get_short(service["type"].upper())
-                service["stype"] = stype
+        for accessory in self.entity_map.accessories:
+            aid = accessory.aid
+            for service in accessory.services:
+                iid = service.iid
 
                 if (aid, iid) in self.entities:
                     # Don't add the same entity again
                     continue
 
                 for listener in callbacks:
-                    if listener(aid, service):
+                    if listener(service):
                         self.entities.append((aid, iid))
                         break
 
@@ -252,7 +355,7 @@ class HKDevice:
     async def async_update(self, now=None):
         """Poll state of all entities attached to this bridge/accessory."""
         if not self.pollable_characteristics:
-            _LOGGER.debug("HomeKit connection not polling any characteristics.")
+            _LOGGER.debug("HomeKit connection not polling any characteristics")
             return
 
         if self._polling_lock.locked():
@@ -294,30 +397,26 @@ class HKDevice:
         """Process events from accessory into HA state."""
         self.available = True
 
+        # Process any stateless events (via device_triggers)
+        async_fire_triggers(self, new_values_dict)
+
         for (aid, cid), value in new_values_dict.items():
             accessory = self.current_state.setdefault(aid, {})
             accessory[cid] = value
+
+        # self.current_state will be replaced by entity_map in a future PR
+        # For now we update both
+        self.entity_map.process_changes(new_values_dict)
 
         self.hass.helpers.dispatcher.async_dispatcher_send(self.signal_state_updated)
 
     async def get_characteristics(self, *args, **kwargs):
         """Read latest state from homekit accessory."""
-        async with self.pairing_lock:
-            chars = await self.hass.async_add_executor_job(
-                self.pairing.get_characteristics, *args, **kwargs
-            )
-        return chars
+        return await self.pairing.get_characteristics(*args, **kwargs)
 
     async def put_characteristics(self, characteristics):
         """Control a HomeKit device state from Home Assistant."""
-        chars = []
-        for row in characteristics:
-            chars.append((row["aid"], row["iid"], row["value"]))
-
-        async with self.pairing_lock:
-            results = await self.hass.async_add_executor_job(
-                self.pairing.put_characteristics, chars
-            )
+        results = await self.pairing.put_characteristics(characteristics)
 
         # Feed characteristics back into HA and update the current state
         # results will only contain failures, so anythin in characteristics
@@ -325,17 +424,17 @@ class HKDevice:
         # reflect the change immediately.
 
         new_entity_state = {}
-        for row in characteristics:
-            key = (row["aid"], row["iid"])
+        for aid, iid, value in characteristics:
+            key = (aid, iid)
 
             # If the key was returned by put_characteristics() then the
-            # change didnt work
+            # change didn't work
             if key in results:
                 continue
 
             # Otherwise it was accepted and we can apply the change to
             # our state
-            new_entity_state[key] = {"value": row["value"]}
+            new_entity_state[key] = {"value": value}
 
         self.process_new_events(new_entity_state)
 

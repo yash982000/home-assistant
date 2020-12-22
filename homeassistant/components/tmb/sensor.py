@@ -7,7 +7,7 @@ from tmb import IBus
 import voluptuous as vol
 
 from homeassistant.components.sensor import PLATFORM_SCHEMA
-from homeassistant.const import ATTR_ATTRIBUTION, CONF_NAME
+from homeassistant.const import ATTR_ATTRIBUTION, CONF_NAME, TIME_MINUTES
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity import Entity
 from homeassistant.util import Throttle
@@ -72,7 +72,7 @@ class TMBSensor(Entity):
         self._stop = stop
         self._line = line.upper()
         self._name = name
-        self._unit = "minutes"
+        self._unit = TIME_MINUTES
         self._state = None
 
     @property
@@ -116,5 +116,5 @@ class TMBSensor(Entity):
             self._state = self._ibus_client.get_stop_forecast(self._stop, self._line)
         except HTTPError:
             _LOGGER.error(
-                "Unable to fetch data from TMB API. Please check your API keys are valid."
+                "Unable to fetch data from TMB API. Please check your API keys are valid"
             )

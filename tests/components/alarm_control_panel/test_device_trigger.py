@@ -22,6 +22,7 @@ from tests.common import (
     mock_device_registry,
     mock_registry,
 )
+from tests.components.blueprint.conftest import stub_blueprint_populate  # noqa
 
 
 @pytest.fixture
@@ -66,6 +67,13 @@ async def test_get_triggers(hass, device_reg, entity_reg):
             "platform": "device",
             "domain": DOMAIN,
             "type": "triggered",
+            "device_id": device_entry.id,
+            "entity_id": f"{DOMAIN}.test_5678",
+        },
+        {
+            "platform": "device",
+            "domain": DOMAIN,
+            "type": "arming",
             "device_id": device_entry.id,
             "entity_id": f"{DOMAIN}.test_5678",
         },
@@ -207,20 +215,18 @@ async def test_if_fires_on_state_change(hass, calls):
     hass.states.async_set("alarm_control_panel.entity", STATE_ALARM_TRIGGERED)
     await hass.async_block_till_done()
     assert len(calls) == 1
-    assert calls[0].data[
-        "some"
-    ] == "triggered - device - {} - pending - triggered - None".format(
-        "alarm_control_panel.entity"
+    assert (
+        calls[0].data["some"]
+        == "triggered - device - alarm_control_panel.entity - pending - triggered - None"
     )
 
     # Fake that the entity is disarmed.
     hass.states.async_set("alarm_control_panel.entity", STATE_ALARM_DISARMED)
     await hass.async_block_till_done()
     assert len(calls) == 2
-    assert calls[1].data[
-        "some"
-    ] == "disarmed - device - {} - triggered - disarmed - None".format(
-        "alarm_control_panel.entity"
+    assert (
+        calls[1].data["some"]
+        == "disarmed - device - alarm_control_panel.entity - triggered - disarmed - None"
     )
 
     # Fake that the entity is armed home.
@@ -228,10 +234,9 @@ async def test_if_fires_on_state_change(hass, calls):
     hass.states.async_set("alarm_control_panel.entity", STATE_ALARM_ARMED_HOME)
     await hass.async_block_till_done()
     assert len(calls) == 3
-    assert calls[2].data[
-        "some"
-    ] == "armed_home - device - {} - pending - armed_home - None".format(
-        "alarm_control_panel.entity"
+    assert (
+        calls[2].data["some"]
+        == "armed_home - device - alarm_control_panel.entity - pending - armed_home - None"
     )
 
     # Fake that the entity is armed away.
@@ -239,10 +244,9 @@ async def test_if_fires_on_state_change(hass, calls):
     hass.states.async_set("alarm_control_panel.entity", STATE_ALARM_ARMED_AWAY)
     await hass.async_block_till_done()
     assert len(calls) == 4
-    assert calls[3].data[
-        "some"
-    ] == "armed_away - device - {} - pending - armed_away - None".format(
-        "alarm_control_panel.entity"
+    assert (
+        calls[3].data["some"]
+        == "armed_away - device - alarm_control_panel.entity - pending - armed_away - None"
     )
 
     # Fake that the entity is armed night.
@@ -250,8 +254,7 @@ async def test_if_fires_on_state_change(hass, calls):
     hass.states.async_set("alarm_control_panel.entity", STATE_ALARM_ARMED_NIGHT)
     await hass.async_block_till_done()
     assert len(calls) == 5
-    assert calls[4].data[
-        "some"
-    ] == "armed_night - device - {} - pending - armed_night - None".format(
-        "alarm_control_panel.entity"
+    assert (
+        calls[4].data["some"]
+        == "armed_night - device - alarm_control_panel.entity - pending - armed_night - None"
     )

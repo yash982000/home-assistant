@@ -3,10 +3,10 @@ import logging
 
 import voluptuous as vol
 
-from homeassistant.components import climate, mqtt
+from homeassistant.components import climate
 from homeassistant.components.climate import (
     PLATFORM_SCHEMA as CLIMATE_PLATFORM_SCHEMA,
-    ClimateDevice,
+    ClimateEntity,
 )
 from homeassistant.components.climate.const import (
     ATTR_HVAC_MODE,
@@ -37,6 +37,8 @@ from homeassistant.const import (
     ATTR_TEMPERATURE,
     CONF_DEVICE,
     CONF_NAME,
+    CONF_TEMPERATURE_UNIT,
+    CONF_UNIQUE_ID,
     CONF_VALUE_TEMPLATE,
     PRECISION_HALVES,
     PRECISION_TENTHS,
@@ -46,20 +48,24 @@ from homeassistant.const import (
 from homeassistant.core import callback
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.reload import async_setup_reload_service
 from homeassistant.helpers.typing import ConfigType, HomeAssistantType
 
 from . import (
     ATTR_DISCOVERY_HASH,
     CONF_QOS,
     CONF_RETAIN,
-    CONF_UNIQUE_ID,
+    DOMAIN,
     MQTT_BASE_PLATFORM_SCHEMA,
+    PLATFORMS,
     MqttAttributes,
     MqttAvailability,
     MqttDiscoveryUpdate,
     MqttEntityDeviceInfo,
     subscription,
 )
+from .. import mqtt
+from .debug_info import log_messages
 from .discovery import MQTT_DISCOVERY_NEW, clear_discovery_hash
 
 _LOGGER = logging.getLogger(__name__)
@@ -168,7 +174,8 @@ PLATFORM_SCHEMA = (
             vol.Optional(CONF_DEVICE): mqtt.MQTT_ENTITY_DEVICE_INFO_SCHEMA,
             vol.Optional(CONF_FAN_MODE_COMMAND_TOPIC): mqtt.valid_publish_topic,
             vol.Optional(
-                CONF_FAN_MODE_LIST, default=[FAN_AUTO, FAN_LOW, FAN_MEDIUM, FAN_HIGH],
+                CONF_FAN_MODE_LIST,
+                default=[FAN_AUTO, FAN_LOW, FAN_MEDIUM, FAN_HIGH],
             ): cv.ensure_list,
             vol.Optional(CONF_FAN_MODE_STATE_TEMPLATE): cv.template,
             vol.Optional(CONF_FAN_MODE_STATE_TOPIC): mqtt.valid_subscribe_topic,
@@ -222,6 +229,7 @@ PLATFORM_SCHEMA = (
             vol.Optional(CONF_TEMP_LOW_STATE_TOPIC): mqtt.valid_subscribe_topic,
             vol.Optional(CONF_TEMP_STATE_TEMPLATE): cv.template,
             vol.Optional(CONF_TEMP_STATE_TOPIC): mqtt.valid_subscribe_topic,
+            vol.Optional(CONF_TEMPERATURE_UNIT): cv.temperature_unit,
             vol.Optional(CONF_UNIQUE_ID): cv.string,
             vol.Optional(CONF_VALUE_TEMPLATE): cv.template,
         }
@@ -235,6 +243,7 @@ async def async_setup_platform(
     hass: HomeAssistantType, config: ConfigType, async_add_entities, discovery_info=None
 ):
     """Set up MQTT climate device through configuration.yaml."""
+    await async_setup_reload_service(hass, DOMAIN, PLATFORMS)
     await _async_setup_entity(hass, config, async_add_entities)
 
 
@@ -243,15 +252,14 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
     async def async_discover(discovery_payload):
         """Discover and add a MQTT climate device."""
+        discovery_data = discovery_payload.discovery_data
         try:
-            discovery_hash = discovery_payload.pop(ATTR_DISCOVERY_HASH)
             config = PLATFORM_SCHEMA(discovery_payload)
             await _async_setup_entity(
-                hass, config, async_add_entities, config_entry, discovery_hash
+                hass, config, async_add_entities, config_entry, discovery_data
             )
         except Exception:
-            if discovery_hash:
-                clear_discovery_hash(hass, discovery_hash)
+            clear_discovery_hash(hass, discovery_data[ATTR_DISCOVERY_HASH])
             raise
 
     async_dispatcher_connect(
@@ -260,10 +268,10 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
 
 async def _async_setup_entity(
-    hass, config, async_add_entities, config_entry=None, discovery_hash=None
+    hass, config, async_add_entities, config_entry=None, discovery_data=None
 ):
     """Set up the MQTT climate devices."""
-    async_add_entities([MqttClimate(hass, config, config_entry, discovery_hash)])
+    async_add_entities([MqttClimate(hass, config, config_entry, discovery_data)])
 
 
 class MqttClimate(
@@ -271,11 +279,11 @@ class MqttClimate(
     MqttAvailability,
     MqttDiscoveryUpdate,
     MqttEntityDeviceInfo,
-    ClimateDevice,
+    ClimateEntity,
 ):
     """Representation of an MQTT climate device."""
 
-    def __init__(self, hass, config, config_entry, discovery_hash):
+    def __init__(self, hass, config, config_entry, discovery_data):
         """Initialize the climate device."""
         self._config = config
         self._unique_id = config.get(CONF_UNIQUE_ID)
@@ -294,7 +302,6 @@ class MqttClimate(
         self._target_temp_high = None
         self._target_temp_low = None
         self._topic = None
-        self._unit_of_measurement = hass.config.units.temperature_unit
         self._value_templates = None
 
         self._setup_from_config(config)
@@ -303,7 +310,7 @@ class MqttClimate(
 
         MqttAttributes.__init__(self, config)
         MqttAvailability.__init__(self, config)
-        MqttDiscoveryUpdate.__init__(self, discovery_hash, self.discovery_update)
+        MqttDiscoveryUpdate.__init__(self, discovery_data, self.discovery_update)
         MqttEntityDeviceInfo.__init__(self, device_config, config_entry)
 
     async def async_added_to_hass(self):
@@ -385,6 +392,7 @@ class MqttClimate(
             return template(msg.payload)
 
         @callback
+        @log_messages(self.hass, self.entity_id)
         def handle_action_received(msg):
             """Handle receiving action via MQTT."""
             payload = render_template(msg, CONF_ACTION_TEMPLATE)
@@ -406,6 +414,7 @@ class MqttClimate(
                 _LOGGER.error("Could not parse temperature from %s", payload)
 
         @callback
+        @log_messages(self.hass, self.entity_id)
         def handle_current_temperature_received(msg):
             """Handle current temperature coming via MQTT."""
             handle_temperature_received(
@@ -417,6 +426,7 @@ class MqttClimate(
         )
 
         @callback
+        @log_messages(self.hass, self.entity_id)
         def handle_target_temperature_received(msg):
             """Handle target temperature coming via MQTT."""
             handle_temperature_received(msg, CONF_TEMP_STATE_TEMPLATE, "_target_temp")
@@ -426,6 +436,7 @@ class MqttClimate(
         )
 
         @callback
+        @log_messages(self.hass, self.entity_id)
         def handle_temperature_low_received(msg):
             """Handle target temperature low coming via MQTT."""
             handle_temperature_received(
@@ -437,6 +448,7 @@ class MqttClimate(
         )
 
         @callback
+        @log_messages(self.hass, self.entity_id)
         def handle_temperature_high_received(msg):
             """Handle target temperature high coming via MQTT."""
             handle_temperature_received(
@@ -459,6 +471,7 @@ class MqttClimate(
                 self.async_write_ha_state()
 
         @callback
+        @log_messages(self.hass, self.entity_id)
         def handle_current_mode_received(msg):
             """Handle receiving mode via MQTT."""
             handle_mode_received(
@@ -468,6 +481,7 @@ class MqttClimate(
         add_subscription(topics, CONF_MODE_STATE_TOPIC, handle_current_mode_received)
 
         @callback
+        @log_messages(self.hass, self.entity_id)
         def handle_fan_mode_received(msg):
             """Handle receiving fan mode via MQTT."""
             handle_mode_received(
@@ -480,6 +494,7 @@ class MqttClimate(
         add_subscription(topics, CONF_FAN_MODE_STATE_TOPIC, handle_fan_mode_received)
 
         @callback
+        @log_messages(self.hass, self.entity_id)
         def handle_swing_mode_received(msg):
             """Handle receiving swing mode via MQTT."""
             handle_mode_received(
@@ -515,6 +530,7 @@ class MqttClimate(
             self.async_write_ha_state()
 
         @callback
+        @log_messages(self.hass, self.entity_id)
         def handle_away_mode_received(msg):
             """Handle receiving away mode via MQTT."""
             handle_onoff_mode_received(msg, CONF_AWAY_MODE_STATE_TEMPLATE, "_away")
@@ -522,6 +538,7 @@ class MqttClimate(
         add_subscription(topics, CONF_AWAY_MODE_STATE_TOPIC, handle_away_mode_received)
 
         @callback
+        @log_messages(self.hass, self.entity_id)
         def handle_aux_mode_received(msg):
             """Handle receiving aux mode via MQTT."""
             handle_onoff_mode_received(msg, CONF_AUX_STATE_TEMPLATE, "_aux")
@@ -529,6 +546,7 @@ class MqttClimate(
         add_subscription(topics, CONF_AUX_STATE_TOPIC, handle_aux_mode_received)
 
         @callback
+        @log_messages(self.hass, self.entity_id)
         def handle_hold_mode_received(msg):
             """Handle receiving hold mode via MQTT."""
             payload = render_template(msg, CONF_HOLD_STATE_TEMPLATE)
@@ -552,6 +570,7 @@ class MqttClimate(
         )
         await MqttAttributes.async_will_remove_from_hass(self)
         await MqttAvailability.async_will_remove_from_hass(self)
+        await MqttDiscoveryUpdate.async_will_remove_from_hass(self)
 
     @property
     def should_poll(self):
@@ -571,7 +590,9 @@ class MqttClimate(
     @property
     def temperature_unit(self):
         """Return the unit of measurement."""
-        return self._unit_of_measurement
+        if self._config.get(CONF_TEMPERATURE_UNIT):
+            return self._config.get(CONF_TEMPERATURE_UNIT)
+        return self.hass.config.units.temperature_unit
 
     @property
     def current_temperature(self):
@@ -620,7 +641,7 @@ class MqttClimate(
             return self._hold
         if self._away:
             return PRESET_AWAY
-        return None
+        return PRESET_NONE
 
     @property
     def preset_modes(self):

@@ -107,12 +107,9 @@ class ImageProcessingEntity(Entity):
         """Process image."""
         raise NotImplementedError()
 
-    def async_process_image(self, image):
-        """Process image.
-
-        This method must be run in the event loop and returns a coroutine.
-        """
-        return self.hass.async_add_job(self.process_image, image)
+    async def async_process_image(self, image):
+        """Process image."""
+        return await self.hass.async_add_executor_job(self.process_image, image)
 
     async def async_update(self):
         """Update image and process it.
@@ -176,9 +173,7 @@ class ImageProcessingFaceEntity(ImageProcessingEntity):
     @property
     def state_attributes(self):
         """Return device specific state attributes."""
-        attr = {ATTR_FACES: self.faces, ATTR_TOTAL_FACES: self.total_faces}
-
-        return attr
+        return {ATTR_FACES: self.faces, ATTR_TOTAL_FACES: self.total_faces}
 
     def process_faces(self, faces, total):
         """Send event with detected faces and store data."""

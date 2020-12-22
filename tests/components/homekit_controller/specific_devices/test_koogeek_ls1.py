@@ -3,7 +3,8 @@
 from datetime import timedelta
 from unittest import mock
 
-from homekit.exceptions import AccessoryDisconnectedError, EncryptionError
+from aiohomekit.exceptions import AccessoryDisconnectedError, EncryptionError
+from aiohomekit.testing import FakePairing
 import pytest
 
 from homeassistant.components.light import SUPPORT_BRIGHTNESS, SUPPORT_COLOR
@@ -11,7 +12,6 @@ import homeassistant.util.dt as dt_util
 
 from tests.common import async_fire_time_changed
 from tests.components.homekit_controller.common import (
-    FakePairing,
     Helper,
     setup_accessories_from_file,
     setup_test_accessories,
@@ -59,7 +59,7 @@ async def test_recover_from_failure(hass, utcnow, failure_cls):
     """
     Test that entity actually recovers from a network connection drop.
 
-    See https://github.com/home-assistant/home-assistant/issues/18949
+    See https://github.com/home-assistant/core/issues/18949
     """
     accessories = await setup_accessories_from_file(hass, "koogeek_ls1.json")
     config_entry, pairing = await setup_test_accessories(hass, accessories)

@@ -19,6 +19,8 @@ def registry(hass):
 @pytest.fixture
 async def create_registrations(hass, authed_api_client):
     """Return two new registrations."""
+    await async_setup_component(hass, DOMAIN, {DOMAIN: {}})
+
     enc_reg = await authed_api_client.post(
         "/api/mobile_app/registrations", json=REGISTER
     )
@@ -39,11 +41,33 @@ async def create_registrations(hass, authed_api_client):
 
 
 @pytest.fixture
-async def webhook_client(hass, aiohttp_client):
-    """mobile_app mock client."""
+async def push_registration(hass, authed_api_client):
+    """Return registration with push notifications enabled."""
     await async_setup_component(hass, DOMAIN, {DOMAIN: {}})
-    await hass.async_block_till_done()
-    return await aiohttp_client(hass.http.app)
+
+    enc_reg = await authed_api_client.post(
+        "/api/mobile_app/registrations",
+        json={
+            **REGISTER,
+            "app_data": {
+                "push_url": "http://localhost/mock-push",
+                "push_token": "abcd",
+            },
+        },
+    )
+
+    assert enc_reg.status == 201
+    return await enc_reg.json()
+
+
+@pytest.fixture
+async def webhook_client(hass, authed_api_client, aiohttp_client):
+    """mobile_app mock client."""
+    # We pass in the authed_api_client server instance because
+    # it is used inside create_registrations and just passing in
+    # the app instance would cause the server to start twice,
+    # which caused deprecation warnings to be printed.
+    return await aiohttp_client(authed_api_client.server)
 
 
 @pytest.fixture

@@ -1,16 +1,19 @@
 """Support for Transport NSW (AU) to query next leave event."""
 from datetime import timedelta
-import logging
 
 from TransportNSW import TransportNSW
 import voluptuous as vol
 
 from homeassistant.components.sensor import PLATFORM_SCHEMA
-from homeassistant.const import ATTR_ATTRIBUTION, ATTR_MODE, CONF_API_KEY, CONF_NAME
+from homeassistant.const import (
+    ATTR_ATTRIBUTION,
+    ATTR_MODE,
+    CONF_API_KEY,
+    CONF_NAME,
+    TIME_MINUTES,
+)
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity import Entity
-
-_LOGGER = logging.getLogger(__name__)
 
 ATTR_STOP_ID = "stop_id"
 ATTR_ROUTE = "route"
@@ -101,7 +104,7 @@ class TransportNSWSensor(Entity):
     @property
     def unit_of_measurement(self):
         """Return the unit this state is expressed in."""
-        return "min"
+        return TIME_MINUTES
 
     @property
     def icon(self):

@@ -2,7 +2,6 @@
 import asyncio
 from collections import OrderedDict
 from datetime import timedelta
-import logging
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 import jwt
@@ -20,7 +19,6 @@ from .providers import AuthProvider, LoginFlow, auth_provider_from_config
 EVENT_USER_ADDED = "user_added"
 EVENT_USER_REMOVED = "user_removed"
 
-_LOGGER = logging.getLogger(__name__)
 _MfaModuleDict = Dict[str, MultiFactorAuthModule]
 _ProviderKey = Tuple[str, Optional[str]]
 _ProviderDict = Dict[_ProviderKey, AuthProvider]
@@ -215,12 +213,14 @@ class AuthManager:
 
         return user
 
-    async def async_create_user(self, name: str) -> models.User:
+    async def async_create_user(
+        self, name: str, group_ids: Optional[List[str]] = None
+    ) -> models.User:
         """Create a user."""
         kwargs: Dict[str, Any] = {
             "name": name,
             "is_active": True,
-            "group_ids": [GROUP_ID_ADMIN],
+            "group_ids": group_ids or [],
         }
 
         if await self._user_should_be_owner():
@@ -284,6 +284,7 @@ class AuthManager:
         self,
         user: models.User,
         name: Optional[str] = None,
+        is_active: Optional[bool] = None,
         group_ids: Optional[List[str]] = None,
     ) -> None:
         """Update a user."""
@@ -294,6 +295,12 @@ class AuthManager:
             kwargs["group_ids"] = group_ids
         await self._store.async_update_user(user, **kwargs)
 
+        if is_active is not None:
+            if is_active is True:
+                await self.async_activate_user(user)
+            else:
+                await self.async_deactivate_user(user)
+
     async def async_activate_user(self, user: models.User) -> None:
         """Activate a user."""
         await self._store.async_activate_user(user)
@@ -301,7 +308,7 @@ class AuthManager:
     async def async_deactivate_user(self, user: models.User) -> None:
         """Deactivate a user."""
         if user.is_owner:
-            raise ValueError("Unable to deactive the owner")
+            raise ValueError("Unable to deactivate the owner")
         await self._store.async_deactivate_user(user)
 
     async def async_remove_credentials(self, credentials: models.Credentials) -> None:
@@ -310,9 +317,7 @@ class AuthManager:
 
         if provider is not None and hasattr(provider, "async_will_remove_credentials"):
             # https://github.com/python/mypy/issues/1424
-            await provider.async_will_remove_credentials(  # type: ignore
-                credentials
-            )
+            await provider.async_will_remove_credentials(credentials)  # type: ignore
 
         await self._store.async_remove_credentials(credentials)
 

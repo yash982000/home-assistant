@@ -102,11 +102,13 @@ class FeedManager:
             # during the initial parsing of the XML, but it doesn't indicate
             # whether this is an unrecoverable error. In this case the
             # feedparser lib is trying a less strict parsing approach.
-            # If an error is detected here, log error message but continue
+            # If an error is detected here, log warning message but continue
             # processing the feed entries if present.
             if self._feed.bozo != 0:
-                _LOGGER.error(
-                    "Error parsing feed %s: %s", self._url, self._feed.bozo_exception
+                _LOGGER.warning(
+                    "Possible issue parsing feed %s: %s",
+                    self._url,
+                    self._feed.bozo_exception,
                 )
             # Using etag and modified, if there's no new data available,
             # the entries list will be empty
@@ -140,7 +142,7 @@ class FeedManager:
     def _update_and_fire_entry(self, entry):
         """Update last_entry_timestamp and fire entry."""
         # Check if the entry has a published date.
-        if "published_parsed" in entry.keys() and entry.published_parsed:
+        if "published_parsed" in entry and entry.published_parsed:
             # We are lucky, `published_parsed` data available, let's make use of
             # it to publish only new available entries since the last run
             self._has_published_parsed = True
@@ -164,7 +166,7 @@ class FeedManager:
             self._last_entry_timestamp = datetime.utcfromtimestamp(0).timetuple()
         for entry in self._feed.entries:
             if self._firstrun or (
-                "published_parsed" in entry.keys()
+                "published_parsed" in entry
                 and entry.published_parsed > self._last_entry_timestamp
             ):
                 self._update_and_fire_entry(entry)

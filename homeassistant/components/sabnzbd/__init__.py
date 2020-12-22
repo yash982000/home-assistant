@@ -14,6 +14,9 @@ from homeassistant.const import (
     CONF_PORT,
     CONF_SENSORS,
     CONF_SSL,
+    DATA_GIGABYTES,
+    DATA_MEGABYTES,
+    DATA_RATE_MEGABYTES_PER_SECOND,
 )
 from homeassistant.core import callback
 from homeassistant.helpers import discovery
@@ -49,16 +52,16 @@ SIGNAL_SABNZBD_UPDATED = "sabnzbd_updated"
 
 SENSOR_TYPES = {
     "current_status": ["Status", None, "status"],
-    "speed": ["Speed", "MB/s", "kbpersec"],
-    "queue_size": ["Queue", "MB", "mb"],
-    "queue_remaining": ["Left", "MB", "mbleft"],
-    "disk_size": ["Disk", "GB", "diskspacetotal1"],
-    "disk_free": ["Disk Free", "GB", "diskspace1"],
+    "speed": ["Speed", DATA_RATE_MEGABYTES_PER_SECOND, "kbpersec"],
+    "queue_size": ["Queue", DATA_MEGABYTES, "mb"],
+    "queue_remaining": ["Left", DATA_MEGABYTES, "mbleft"],
+    "disk_size": ["Disk", DATA_GIGABYTES, "diskspacetotal1"],
+    "disk_free": ["Disk Free", DATA_GIGABYTES, "diskspace1"],
     "queue_count": ["Queue Count", None, "noofslots_total"],
-    "day_size": ["Daily Total", "GB", "day_size"],
-    "week_size": ["Weekly Total", "GB", "week_size"],
-    "month_size": ["Monthly Total", "GB", "month_size"],
-    "total_size": ["Total", "GB", "total_size"],
+    "day_size": ["Daily Total", DATA_GIGABYTES, "day_size"],
+    "week_size": ["Weekly Total", DATA_GIGABYTES, "week_size"],
+    "month_size": ["Monthly Total", DATA_GIGABYTES, "month_size"],
+    "total_size": ["Total", DATA_GIGABYTES, "total_size"],
 }
 
 SPEED_LIMIT_SCHEMA = vol.Schema(
@@ -107,7 +110,9 @@ async def async_configure_sabnzbd(
     uri_scheme = "https" if use_ssl else "http"
     base_url = BASE_URL_FORMAT.format(uri_scheme, host, port)
     if api_key is None:
-        conf = await hass.async_add_job(load_json, hass.config.path(CONFIG_FILE))
+        conf = await hass.async_add_executor_job(
+            load_json, hass.config.path(CONFIG_FILE)
+        )
         api_key = conf.get(base_url, {}).get(CONF_API_KEY, "")
 
     sab_api = SabnzbdApi(
@@ -131,7 +136,7 @@ async def async_setup(hass, config):
 
     conf = config.get(DOMAIN)
     if conf is not None:
-        use_ssl = conf.get(CONF_SSL)
+        use_ssl = conf[CONF_SSL]
         name = conf.get(CONF_NAME)
         api_key = conf.get(CONF_API_KEY)
         await async_configure_sabnzbd(hass, conf, use_ssl, name, api_key)

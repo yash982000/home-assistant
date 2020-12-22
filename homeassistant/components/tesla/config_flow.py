@@ -11,11 +11,18 @@ from homeassistant.const import (
     CONF_SCAN_INTERVAL,
     CONF_TOKEN,
     CONF_USERNAME,
+    HTTP_UNAUTHORIZED,
 )
 from homeassistant.core import callback
 from homeassistant.helpers import aiohttp_client, config_validation as cv
 
-from .const import DOMAIN
+from .const import (
+    CONF_WAKE_ON_START,
+    DEFAULT_SCAN_INTERVAL,
+    DEFAULT_WAKE_ON_START,
+    DOMAIN,
+    MIN_SCAN_INTERVAL,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,7 +34,7 @@ DATA_SCHEMA = vol.Schema(
 @callback
 def configured_instances(hass):
     """Return a set of configured Tesla instances."""
-    return set(entry.title for entry in hass.config_entries.async_entries(DOMAIN))
+    return {entry.title for entry in hass.config_entries.async_entries(DOMAIN)}
 
 
 class TeslaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -55,7 +62,7 @@ class TeslaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_show_form(
                 step_id="user",
                 data_schema=DATA_SCHEMA,
-                errors={CONF_USERNAME: "identifier_exists"},
+                errors={CONF_USERNAME: "already_configured"},
                 description_placeholders={},
             )
 
@@ -65,14 +72,14 @@ class TeslaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_show_form(
                 step_id="user",
                 data_schema=DATA_SCHEMA,
-                errors={"base": "connection_error"},
+                errors={"base": "cannot_connect"},
                 description_placeholders={},
             )
         except InvalidAuth:
             return self.async_show_form(
                 step_id="user",
                 data_schema=DATA_SCHEMA,
-                errors={"base": "invalid_credentials"},
+                errors={"base": "invalid_auth"},
                 description_placeholders={},
             )
         return self.async_create_entry(title=user_input[CONF_USERNAME], data=info)
@@ -100,8 +107,16 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             {
                 vol.Optional(
                     CONF_SCAN_INTERVAL,
-                    default=self.config_entry.options.get(CONF_SCAN_INTERVAL, 300),
-                ): vol.All(cv.positive_int, vol.Clamp(min=300))
+                    default=self.config_entry.options.get(
+                        CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+                    ),
+                ): vol.All(cv.positive_int, vol.Clamp(min=MIN_SCAN_INTERVAL)),
+                vol.Optional(
+                    CONF_WAKE_ON_START,
+                    default=self.config_entry.options.get(
+                        CONF_WAKE_ON_START, DEFAULT_WAKE_ON_START
+                    ),
+                ): bool,
             }
         )
         return self.async_show_form(step_id="init", data_schema=data_schema)
@@ -120,17 +135,17 @@ async def validate_input(hass: core.HomeAssistant, data):
             websession,
             email=data[CONF_USERNAME],
             password=data[CONF_PASSWORD],
-            update_interval=300,
+            update_interval=DEFAULT_SCAN_INTERVAL,
         )
         (config[CONF_TOKEN], config[CONF_ACCESS_TOKEN]) = await controller.connect(
             test_login=True
         )
     except TeslaException as ex:
-        if ex.code == 401:
+        if ex.code == HTTP_UNAUTHORIZED:
             _LOGGER.error("Invalid credentials: %s", ex)
-            raise InvalidAuth()
+            raise InvalidAuth() from ex
         _LOGGER.error("Unable to communicate with Tesla API: %s", ex)
-        raise CannotConnect()
+        raise CannotConnect() from ex
     _LOGGER.debug("Credentials successfully connected to the Tesla API")
     return config
 

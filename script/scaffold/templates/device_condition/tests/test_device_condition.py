@@ -1,8 +1,8 @@
 """The tests for NEW_NAME device conditions."""
 import pytest
 
+from homeassistant.components import automation
 from homeassistant.components.NEW_DOMAIN import DOMAIN
-import homeassistant.components.automation as automation
 from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.helpers import device_registry
 from homeassistant.setup import async_setup_component
@@ -31,7 +31,7 @@ def entity_reg(hass):
 
 @pytest.fixture
 def calls(hass):
-    """Track calls to a mock serivce."""
+    """Track calls to a mock service."""
     return async_mock_service(hass, "test", "automation")
 
 

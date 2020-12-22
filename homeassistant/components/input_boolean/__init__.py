@@ -28,8 +28,6 @@ from homeassistant.loader import bind_hass
 
 DOMAIN = "input_boolean"
 
-ENTITY_ID_FORMAT = DOMAIN + ".{}"
-
 _LOGGER = logging.getLogger(__name__)
 
 CONF_INITIAL = "initial"
@@ -97,7 +95,7 @@ async def async_setup(hass: HomeAssistantType, config: ConfigType) -> bool:
 
     storage_collection = InputBooleanStorageCollection(
         Store(hass, STORAGE_VERSION, STORAGE_KEY),
-        logging.getLogger(f"{__name__}_storage_collection"),
+        logging.getLogger(f"{__name__}.storage_collection"),
         id_manager,
     )
     collection.attach_entity_component_collection(
@@ -155,7 +153,7 @@ class InputBoolean(ToggleEntity, RestoreEntity):
         self._state = config.get(CONF_INITIAL)
         if from_yaml:
             self._editable = False
-            self.entity_id = ENTITY_ID_FORMAT.format(self.unique_id)
+            self.entity_id = f"{DOMAIN}.{self.unique_id}"
 
     @property
     def should_poll(self):
@@ -200,12 +198,12 @@ class InputBoolean(ToggleEntity, RestoreEntity):
     async def async_turn_on(self, **kwargs):
         """Turn the entity on."""
         self._state = True
-        await self.async_update_ha_state()
+        self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs):
         """Turn the entity off."""
         self._state = False
-        await self.async_update_ha_state()
+        self.async_write_ha_state()
 
     async def async_update_config(self, config: typing.Dict) -> None:
         """Handle when the config is updated."""

@@ -1,5 +1,4 @@
 """Support for esphome sensors."""
-import logging
 import math
 from typing import Optional
 
@@ -9,8 +8,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.typing import HomeAssistantType
 
 from . import EsphomeEntity, esphome_state_property, platform_async_setup_entry
-
-_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -69,9 +66,7 @@ class EsphomeSensor(EsphomeEntity):
             return None
         if self._state.missing_state:
             return None
-        return "{:.{prec}f}".format(
-            self._state.state, prec=self._static_info.accuracy_decimals
-        )
+        return f"{self._state.state:.{self._static_info.accuracy_decimals}f}"
 
     @property
     def unit_of_measurement(self) -> str:

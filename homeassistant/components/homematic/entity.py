@@ -40,6 +40,7 @@ class HMDevice(Entity):
         self._hmdevice = None
         self._connected = False
         self._available = False
+        self._channel_map = set()
 
         # Set parameter to uppercase
         if self._state:
@@ -47,7 +48,7 @@ class HMDevice(Entity):
 
     async def async_added_to_hass(self):
         """Load data init callbacks."""
-        await self.hass.async_add_job(self._subscribe_homematic_events)
+        self._subscribe_homematic_events()
 
     @property
     def unique_id(self):
@@ -72,7 +73,12 @@ class HMDevice(Entity):
     @property
     def device_state_attributes(self):
         """Return device specific state attributes."""
-        attr = {}
+
+        # Static attributes
+        attr = {
+            "id": self._hmdevice.ADDRESS,
+            "interface": self._interface,
+        }
 
         # Generate a dictionary with attributes
         for node, data in HM_ATTRIBUTE_SUPPORT.items():
@@ -80,10 +86,6 @@ class HMDevice(Entity):
             if node in self._data:
                 value = data[1].get(self._data[node], self._data[node])
                 attr[data[0]] = value
-
-        # Static attributes
-        attr["id"] = self._hmdevice.ADDRESS
-        attr["interface"] = self._interface
 
         return attr
 
@@ -110,15 +112,12 @@ class HMDevice(Entity):
 
     def _hm_event_callback(self, device, caller, attribute, value):
         """Handle all pyhomematic device events."""
-        _LOGGER.debug("%s received event '%s' value: %s", self._name, attribute, value)
         has_changed = False
 
         # Is data needed for this instance?
-        if attribute in self._data:
-            # Did data change?
-            if self._data[attribute] != value:
-                self._data[attribute] = value
-                has_changed = True
+        if f"{attribute}:{device.partition(':')[2]}" in self._channel_map:
+            self._data[attribute] = value
+            has_changed = True
 
         # Availability has changed
         if self.available != (not self._hmdevice.UNREACH):
@@ -131,9 +130,6 @@ class HMDevice(Entity):
 
     def _subscribe_homematic_events(self):
         """Subscribe all required events to handle job."""
-        channels_to_sub = set()
-
-        # Push data to channels_to_sub from hmdevice metadata
         for metadata in (
             self._hmdevice.SENSORNODE,
             self._hmdevice.BINARYNODE,
@@ -150,19 +146,11 @@ class HMDevice(Entity):
                         channel = channels[0]
                     else:
                         channel = self._channel
-
-                    # Prepare for subscription
-                    try:
-                        channels_to_sub.add(int(channel))
-                    except (ValueError, TypeError):
-                        _LOGGER.error("Invalid channel in metadata from %s", self._name)
+                    # Remember the channel for this attribute to ignore invalid events later
+                    self._channel_map.add(f"{node}:{channel!s}")
 
         # Set callbacks
-        for channel in channels_to_sub:
-            _LOGGER.debug("Subscribe channel %d from %s", channel, self._name)
-            self._hmdevice.setEventCallback(
-                callback=self._hm_event_callback, bequeath=False, channel=channel
-            )
+        self._hmdevice.setEventCallback(callback=self._hm_event_callback, bequeath=True)
 
     def _load_data_from_hm(self):
         """Load first value from pyhomematic."""
@@ -213,7 +201,7 @@ class HMHub(Entity):
     def __init__(self, hass, homematic, name):
         """Initialize HomeMatic hub."""
         self.hass = hass
-        self.entity_id = "{}.{}".format(DOMAIN, name.lower())
+        self.entity_id = f"{DOMAIN}.{name.lower()}"
         self._homematic = homematic
         self._variables = {}
         self._name = name
@@ -246,8 +234,7 @@ class HMHub(Entity):
     @property
     def state_attributes(self):
         """Return the state attributes."""
-        attr = self._variables.copy()
-        return attr
+        return self._variables.copy()
 
     @property
     def icon(self):

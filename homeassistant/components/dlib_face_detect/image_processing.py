@@ -1,6 +1,5 @@
 """Component that will help set the Dlib face detect processing."""
 import io
-import logging
 
 import face_recognition  # pylint: disable=import-error
 
@@ -16,8 +15,6 @@ from homeassistant.core import split_entity_id
 from homeassistant.components.image_processing import (  # noqa: F401, isort:skip
     PLATFORM_SCHEMA,
 )
-
-_LOGGER = logging.getLogger(__name__)
 
 ATTR_LOCATION = "location"
 
@@ -45,7 +42,7 @@ class DlibFaceDetectEntity(ImageProcessingFaceEntity):
         if name:
             self._name = name
         else:
-            self._name = "Dlib Face {0}".format(split_entity_id(camera_entity)[1])
+            self._name = f"Dlib Face {split_entity_id(camera_entity)[1]}"
 
     @property
     def camera_entity(self):

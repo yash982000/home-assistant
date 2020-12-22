@@ -90,7 +90,7 @@ class YiCamera(Camera):
             await ftp.connect(self.host)
             await ftp.login(self.user, self.passwd)
         except (ConnectionRefusedError, StatusCodeError) as err:
-            raise PlatformNotReady(err)
+            raise PlatformNotReady(err) from err
 
         try:
             await ftp.change_directory(self.path)
@@ -110,14 +110,9 @@ class YiCamera(Camera):
 
             await ftp.quit()
             self._is_on = True
-            return "ftp://{0}:{1}@{2}:{3}{4}/{5}/{6}".format(
-                self.user,
-                self.passwd,
-                self.host,
-                self.port,
-                self.path,
-                latest_dir,
-                videos[-1],
+            return (
+                f"ftp://{self.user}:{self.passwd}@{self.host}:"
+                f"{self.port}{self.path}/{latest_dir}/{videos[-1]}"
             )
         except (ConnectionRefusedError, StatusCodeError) as err:
             _LOGGER.error("Error while fetching video: %s", err)
@@ -128,12 +123,11 @@ class YiCamera(Camera):
         """Return a still image response from the camera."""
         url = await self._get_latest_video_url()
         if url and url != self._last_url:
-            ffmpeg = ImageFrame(self._manager.binary, loop=self.hass.loop)
+            ffmpeg = ImageFrame(self._manager.binary)
             self._last_image = await asyncio.shield(
                 ffmpeg.get_image(
                     url, output_format=IMAGE_JPEG, extra_cmd=self._extra_arguments
                 ),
-                loop=self.hass.loop,
             )
             self._last_url = url
 
@@ -144,7 +138,7 @@ class YiCamera(Camera):
         if not self._is_on:
             return
 
-        stream = CameraMjpeg(self._manager.binary, loop=self.hass.loop)
+        stream = CameraMjpeg(self._manager.binary)
         await stream.open_camera(self._last_url, extra_cmd=self._extra_arguments)
 
         try:

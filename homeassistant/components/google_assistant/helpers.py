@@ -17,7 +17,9 @@ from homeassistant.const import (
     STATE_UNAVAILABLE,
 )
 from homeassistant.core import Context, HomeAssistant, State, callback
+from homeassistant.helpers.area_registry import AreaEntry
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.network import get_url
 from homeassistant.helpers.storage import Store
 
 from . import trait
@@ -28,12 +30,37 @@ from .const import (
     DOMAIN,
     DOMAIN_TO_GOOGLE_TYPES,
     ERR_FUNCTION_NOT_SUPPORTED,
+    NOT_EXPOSE_LOCAL,
+    SOURCE_LOCAL,
     STORE_AGENT_USER_IDS,
 )
 from .error import SmartHomeError
 
 SYNC_DELAY = 15
 _LOGGER = logging.getLogger(__name__)
+
+
+async def _get_area(hass, entity_id) -> Optional[AreaEntry]:
+    """Calculate the area for a entity_id."""
+    dev_reg, ent_reg, area_reg = await gather(
+        hass.helpers.device_registry.async_get_registry(),
+        hass.helpers.entity_registry.async_get_registry(),
+        hass.helpers.area_registry.async_get_registry(),
+    )
+
+    entity_entry = ent_reg.async_get(entity_id)
+    if not entity_entry:
+        return None
+
+    if entity_entry.area_id:
+        area_id = entity_entry.area_id
+    else:
+        device_entry = dev_reg.devices.get(entity_entry.device_id)
+        if not (device_entry and device_entry.area_id):
+            return None
+        area_id = device_entry.area_id
+
+    return area_reg.areas.get(area_id)
 
 
 class AbstractConfig(ABC):
@@ -121,6 +148,7 @@ class AbstractConfig(ABC):
         ]
         await gather(*jobs)
 
+    @callback
     def async_enable_report_state(self):
         """Enable proactive mode."""
         # Circular dep
@@ -130,6 +158,7 @@ class AbstractConfig(ABC):
         if self._unsub_report_state is None:
             self._unsub_report_state = async_enable_report_state(self.hass, self)
 
+    @callback
     def async_disable_report_state(self):
         """Disable report state."""
         if self._unsub_report_state is not None:
@@ -203,7 +232,11 @@ class AbstractConfig(ABC):
             return
 
         webhook.async_register(
-            self.hass, DOMAIN, "Local Support", webhook_id, self._handle_local_webhook,
+            self.hass,
+            DOMAIN,
+            "Local Support",
+            webhook_id,
+            self._handle_local_webhook,
         )
 
         self._local_sdk_active = True
@@ -232,7 +265,7 @@ class AbstractConfig(ABC):
             return json_response(smart_home.turned_off_response(payload))
 
         result = await smart_home.async_handle_message(
-            self.hass, self, self.local_sdk_user_id, payload
+            self.hass, self, self.local_sdk_user_id, payload, SOURCE_LOCAL
         )
 
         if _LOGGER.isEnabledFor(logging.DEBUG):
@@ -286,14 +319,21 @@ class RequestData:
         self,
         config: AbstractConfig,
         user_id: str,
+        source: str,
         request_id: str,
         devices: Optional[List[dict]],
     ):
         """Initialize the request data."""
         self.config = config
+        self.source = source
         self.request_id = request_id
         self.context = Context(user_id=user_id)
         self.devices = devices
+
+    @property
+    def is_local_request(self):
+        """Return if this is a local request."""
+        return self.source == SOURCE_LOCAL
 
 
 def get_google_type(domain, device_class):
@@ -327,6 +367,15 @@ class GoogleEntity:
         state = self.state
         domain = state.domain
         features = state.attributes.get(ATTR_SUPPORTED_FEATURES, 0)
+
+        if not isinstance(features, int):
+            _LOGGER.warning(
+                "Entity %s contains invalid supported_features value %s",
+                self.entity_id,
+                features,
+            )
+            return []
+
         device_class = state.attributes.get(ATTR_DEVICE_CLASS)
 
         self._traits = [
@@ -342,6 +391,18 @@ class GoogleEntity:
         return self.config.should_expose(self.state)
 
     @callback
+    def should_expose_local(self) -> bool:
+        """Return if the entity should be exposed locally."""
+        return (
+            self.should_expose()
+            and get_google_type(
+                self.state.domain, self.state.attributes.get(ATTR_DEVICE_CLASS)
+            )
+            not in NOT_EXPOSE_LOCAL
+            and not self.might_2fa()
+        )
+
+    @callback
     def is_supported(self) -> bool:
         """Return if the entity is supported by Google."""
         return bool(self.traits())
@@ -349,6 +410,14 @@ class GoogleEntity:
     @callback
     def might_2fa(self) -> bool:
         """Return if the entity might encounter 2FA."""
+        if not self.config.should_2fa(self.state):
+            return False
+
+        return self.might_2fa_traits()
+
+    @callback
+    def might_2fa_traits(self) -> bool:
+        """Return if the entity might encounter 2FA based on just traits."""
         state = self.state
         domain = state.domain
         features = state.attributes.get(ATTR_SUPPORTED_FEATURES, 0)
@@ -386,14 +455,16 @@ class GoogleEntity:
         # use aliases
         aliases = entity_config.get(CONF_ALIASES)
         if aliases:
-            device["name"]["nicknames"] = aliases
+            device["name"]["nicknames"] = [name] + aliases
 
-        if self.config.is_local_sdk_active:
+        if self.config.is_local_sdk_active and self.should_expose_local():
             device["otherDeviceIds"] = [{"deviceId": self.entity_id}]
             device["customData"] = {
                 "webhookId": self.config.local_sdk_webhook_id,
-                "httpPort": self.hass.config.api.port,
+                "httpPort": self.hass.http.server_port,
                 "httpSSL": self.hass.config.api.use_ssl,
+                "uuid": await self.hass.helpers.instance_id.async_get(),
+                "baseUrl": get_url(self.hass, prefer_external=True),
                 "proxyDeviceId": agent_user_id,
             }
 
@@ -403,25 +474,10 @@ class GoogleEntity:
         room = entity_config.get(CONF_ROOM_HINT)
         if room:
             device["roomHint"] = room
-            return device
-
-        dev_reg, ent_reg, area_reg = await gather(
-            self.hass.helpers.device_registry.async_get_registry(),
-            self.hass.helpers.entity_registry.async_get_registry(),
-            self.hass.helpers.area_registry.async_get_registry(),
-        )
-
-        entity_entry = ent_reg.async_get(state.entity_id)
-        if not (entity_entry and entity_entry.device_id):
-            return device
-
-        device_entry = dev_reg.devices.get(entity_entry.device_id)
-        if not (device_entry and device_entry.area_id):
-            return device
-
-        area_entry = area_reg.areas.get(device_entry.area_id)
-        if area_entry and area_entry.name:
-            device["roomHint"] = area_entry.name
+        else:
+            area = await _get_area(self.hass, state.entity_id)
+            if area and area.name:
+                device["roomHint"] = area.name
 
         return device
 
